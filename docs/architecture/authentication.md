@@ -2,26 +2,28 @@
 
 日期：2026-09-04
 
-范围：用户已确认的首版 Go 登录模块。本文不扩展帖子、草稿、图片或视频功能。
+状态：设计基线（线上协议仍需按证据门禁验收）
+
+范围：首版 Go 登录模块的架构约束。本文不扩展帖子、草稿、图片或视频功能。
 
 ## 1. 目标与实现边界
 
-- 使用 Go 实现 `mys auth login` 和 `mys auth status`，支持 Windows、macOS、Linux。
-- 保留现有 Python 工具作为协议参考，不修改其行为，不将 Python 作为运行时依赖。
-- 采用已经讨论并确认的 HK4E 扫码链路：获取二维码、等待手机确认、取得 Game Token、交换 SToken、保存凭据。
+- 使用 Go 和 Cobra 实现 `mys auth login`、`mys auth status` 和 `mys auth logout`，支持 Windows、macOS、Linux。
+- 上游逆向资料中的 Python 工具只作为协议证据，不将 Python 作为运行时依赖，也不继承其中未经验证的回退行为。
+- 采用 HK4E 扫码链路：获取二维码、等待手机确认、取得 Game Token、交换 SToken、保存凭据。
 - 不实现 Web 扫码只读回退、不自动切换登录方案、不实现短信或密码登录。
 - 不把 Game Token 拼接、改名或复制成 SToken；只有交换接口明确成功且响应完整才保存 SToken。
 - 本轮不执行真实发帖、上传、删帖或其它社区写操作。
 
-现有仓库记录了 Game Token 交换 SToken 曾失败的情况。用户选择暂不展开这项兼容性研究，不意味着可以假定服务端成功。CLI 必须如实报告交换失败，并保留此前保存的凭据。
+上游资料记录了 Game Token 交换 SToken 曾失败的情况。本设计不展开只读回退兼容性研究，也不假定服务端交换必然成功。CLI 必须如实报告交换失败，并保留此前保存的凭据。
 
 ## 2. 方案选择
 
-选用独立 Go 模块、直接 HTTP 调用及用户配置目录中的受权限保护 JSON 文件。相对于包装 Python，部署不需要第二个运行时；相对于系统钥匙串，能覆盖无桌面 Linux 环境。
+选用 Go、Cobra、直接 HTTP 调用及用户配置目录中的受权限保护 JSON 文件。相对于包装 Python，部署不需要第二个运行时；相对于系统钥匙串，能覆盖无桌面 Linux 环境。
 
 凭据文件不是加密保险库。它防止普通其他本地用户读取，不承诺抵御当前用户权限下的恶意进程、管理员访问或磁盘被离线读取。系统钥匙串或口令加密不属于本轮范围。
 
-建议编码阶段使用独立 Git worktree，保持用于同步上游资料的 `mihoyo-api` 检出不混入实现修改；创建前取得用户同意。当前只新增本设计文档。
+本仓库只保存架构文档。后续实现仓库应将协议 fixture 与运行时代码分离，并保证任何抓包样本在提交前完成脱敏和秘密扫描。
 
 ## 3. 命令与使用体验
 
@@ -46,9 +48,15 @@
 
 不读取或输出账号邮箱、电话、实名信息；不通过只读状态命令发起鉴权、交换或其它网络请求。文件缺失、格式损坏或权限不安全时给出明确提示。
 
+### `mys auth logout`
+
+只删除本地凭据，不调用未经验证的远程注销或 Token 撤销接口。命令是幂等的：凭据不存在时仍返回成功并报告“当前未登录”；存在时先验证目标位于专用凭据路径且不是符号链接/reparse point，再删除该文件。删除失败必须返回错误，不得把文件内容打印到日志，也不得递归删除配置目录。
+
+`logout` 不承诺让已经签发的 SToken 在服务端立即失效；若用户需要强制失效，应使用米游社/米哈游提供的账号安全能力。CLI 只报告本地状态变化。
+
 ## 4. 协议与模块边界
 
-新增模块位置：`mihoyo_cli/`，入口为 `cmd/mys/`。
+目标实现的模块位置为 `mihoyo_cli/`，入口为 `cmd/mys/`。
 
 - CLI 层：解析命令与超时，展示二维码和脱敏进度，映射退出状态。
 - Auth 层：设备上下文、二维码状态机、Game Token 到 SToken 的交换、响应校验。HTTP 客户端可注入，以便使用本地测试服务器。
@@ -61,7 +69,7 @@
 - 指纹：`public-data-api.mihoyo.com/device-fp/api/getFp`。
 - 交换：`api-takumi.mihoyo.com/account/ma-cn-session/app/getTokenByGameToken`，JSON 包含 `account_id` 和 `game_token`，请求头与 DS 依现有参考实现逐项测试。
 
-二维码 HTTP 方法及参数位置采用仓库已验证的 GET fetch / POST query（query 参数）形式，与 UIGF 的 POST JSON 示例区分记录，不悄悄混合两种调用形式。
+二维码 HTTP 方法及参数位置采用上游证据仓库已验证的 GET fetch / POST query（query 参数）形式，与 UIGF 的 POST JSON 示例区分记录，不悄悄混合两种调用形式。
 
 使用标准 TLS 校验，不关闭证书验证。含凭据的请求不跟随重定向，错误消息不包含原始请求/响应或带敏感参数的 URL。单个 JSON 响应上限为 1 MiB，拒绝缺少成功标志或必需字段的响应。
 
@@ -116,19 +124,20 @@ Game Token 仅用于当前交换，不额外落盘；不保存整份响应、手
 - UID/MID 解析、交换请求的 body/header/DS、Token 类型校验和账号一致性。
 - Game Token 不会被当作 SToken 保存。
 - 成功保存与读取、未知到期时间、损坏文件、不安全权限、旧文件保留及替换失败。
+- `logout` 的目标路径校验、幂等删除、删除失败和“不代表远程撤销”输出。
 - 终端、日志、错误与状态输出不泄露合成秘密。
 - 二维码内容解码/编码一致性及重建后不残留旧内容。
 - 执行 Go 单元测试与 `go vet`；交叉编译 Windows/macOS/Linux 的 amd64、arm64 目标。
 
-平台声明区分“编译通过”和“运行验证”。在当前 Windows 主机验证文件权限；未实际运行的 macOS/Linux 安全行为不声称已实机测试。
+平台声明必须区分“编译通过”和“运行验证”。Windows、macOS、Linux 的权限行为分别完成实机测试前，不声称该平台的安全存储已经验证。
 
 真实登录需要用户使用自己的 App 扫码确认。没有完成真实交换与保存时，只报告本地测试/编译结果，不声称线上登录已跑通。
 
 ## 8. 参考依据
 
-- `mihoyo_bbs/tools/qr_login.py`：现有 HK4E 扫码及交换尝试，不继承其交换失败后保存伪 SToken 的行为。
-- `mihoyo_bbs/tools/mys_ds_gen.py`：现有 DS 参考与测试向量。
-- `mihoyo_bbs/docs/api/扫码登录与收藏夹_旧版服务整理.md`：已测二维码请求和已知登录限制。
+- [上游 mihoyo-api 资料](https://cnb.cool/NRD-Tech/Reverse_Project/-/tree/mihoyo-api)中的 `mihoyo_bbs/tools/qr_login.py`：HK4E 扫码及交换尝试；本设计不继承其交换失败后保存伪 SToken 的行为。
+- 同一上游资料中的 `mihoyo_bbs/tools/mys_ds_gen.py`：DS 参考与测试向量。
+- 同一上游资料中的 `mihoyo_bbs/docs/api/扫码登录与收藏夹_旧版服务整理.md`：已测二维码请求和已知登录限制。
 - [UIGF Game Token 扫码](https://uigf.org/zh/mihoyo-api-collection/hoyolab/login/qrcode_hk4e.html)。
 - [UIGF Token 交换](https://uigf.org/zh/mihoyo-api-collection/hoyolab/user/token.html)。
 - [UIGF 鉴权与 Token 区别](https://uigf.org/zh/mihoyo-api-collection/other/authentication.html)。

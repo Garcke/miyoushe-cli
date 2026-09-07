@@ -2,19 +2,20 @@
 
 日期：2026-09-07
 
-状态：设计草案，待按接口证据分阶段实现
-依赖：[Go QR 登录与本地凭据保存设计](2026-09-04-go-qr-auth-design.md)
+状态：设计基线（各适配器待按接口证据分阶段启用）
+
+依赖：[Go QR 登录与本地凭据保存设计](authentication.md)、[协议证据清单](evidence-manifest.md)
 
 ## 1. 目标和边界
 
-在现有 Go + Cobra CLI 上增加社区账户的常用查看与内容管理能力：
+目标 Go + Cobra CLI 在认证基线之上提供社区账户的常用查看与内容管理能力：
 
 - 查看绑定游戏角色。
 - 查看自己的帖子、任意帖子详情与收藏夹内容。
 - 保存、查看、发布和删除草稿。
 - 发布、完整替换编辑和删除帖子。
 - 支持纯文字、本地图片、长文，以及视频/图片/文字混排。
-- 支持收藏与取消收藏；收藏夹目录管理不进入第一轮实现。
+- 支持收藏与取消收藏；收藏夹目录管理不进入当前设计范围。
 - Windows、macOS、Linux 使用同一命令和内容文件格式。
 
 继续沿用首版约束：只有一个默认社区账号，不设计 profile、账号列表或账号切换；不加入 Viper、TUI 或内置编辑器。评论、私聊、点赞、签到、定时发布、批量养号和大规模自动发帖不在本设计范围。
@@ -23,13 +24,13 @@
 
 ## 2. 证据等级与实现纪律
 
-仓库中的“接口存在”“抓包出现”和“已经复现”不是同一件事。每个适配器必须标记以下等级：
+上游证据仓库中的“接口存在”“抓包出现”和“已经复现”不是同一件事。每个适配器必须标记以下等级：
 
 - **V（Verified）**：仓库至少成功复现过该端点的一种场景，方法、路径和该场景的主要参数可信；不代表所有 body 变体都完整。
 - **O（Observed）**：真实 App 流程中抓到完整链路，但本文档仍缺部分请求/响应字段样本。
 - **P（Path only）**：仅从 dex 或接口矩阵得到路径，方法或 body 可能是推断。
 
-证据等级描述“见过并验证到什么程度”，不等于发布就绪。表格中的“参数待补”“body 部分记录”等缺口是独立门禁：只有目标命令所需的完整脱敏 fixture、错误样本和契约测试齐全，适配器才可标记为 `ready`。
+证据等级描述“见过并验证到什么程度”，不等于发布就绪。表格中的“参数待补”“body 部分记录”等缺口是独立门禁：只有目标命令所需的完整脱敏 fixture、错误样本和契约测试齐全，适配器才可标记为 `adapter_ready`。
 
 实现规则：
 
@@ -85,7 +86,7 @@ mys
 - 列表和详情的人类可读输出写 stdout，进度写 stderr。`--json` 时 stdout 只包含一个稳定 JSON 文档。
 - `operation` 只管理本地写操作记录；`reconcile` 仅做远端只读对账，`cleanup` 仅删除已完成/过期的本地记录，不承诺删除已上传媒体。
 
-上面的命令树是目标形态。分阶段发布时，只注册 `ready` 适配器对应的命令；例如阶段 A 不显示 `post edit`、`favorite add/remove`，阶段 E 前 `kind=video` 返回 `FEATURE_UNAVAILABLE`。不提供会在运行到一半才发现“尚未实现”的写命令。
+上面的命令树是目标形态。分阶段发布时，只注册 `adapter_ready` 适配器对应的命令；例如阶段 A 不显示 `post edit`、`favorite add/remove`，阶段 E 前 `kind=video` 返回 `FEATURE_UNAVAILABLE`。不提供会在运行到一半才发现“尚未实现”的写命令。
 
 ## 4. 统一内容输入格式
 
@@ -115,7 +116,7 @@ mys
 - `blocks` 保留顺序；类型仅允许 `text`、`image`、`video`。
 - `image.path`、`video.path` 和 `cover` 只接受本地文件。首版不下载远程 URL，避免 SSRF、超时和远程内容变化。
 - `cover` 顶层字段只用于长文封面；视频块允许自己的可选 `cover`。首版拒绝在 image kind 使用顶层 cover，也拒绝在 video kind 同时设置顶层 cover，避免优先级歧义。
-- 视频块未提供 `cover` 时是否自动截帧要等媒体探测实现确定；在该能力成为 `ready` 前要求显式封面，不在编译器中伪造。
+- 视频块未提供 `cover` 时是否自动截帧要等媒体探测实现确定；在该能力成为 `adapter_ready` 前要求显式封面，不在编译器中伪造。
 - 相对路径以 ContentSpec 文件所在目录解析，而不是当前 shell 目录。
 - 解析时拒绝未知字段、重复 JSON 键、非法 UTF-8、空正文块和不匹配的 `kind`/block 组合。
 - `image` 是短帖：至少一个文字或图片块，不允许视频；纯文字也明确使用该 kind，并映射为 `view_type=2`。
@@ -203,7 +204,7 @@ mihoyo_cli/internal/
 └─ cli/          # Cobra 组合和依赖注入
 ```
 
-现有 `internal/auth` 中通用 BBS DS 与请求头在实现社区功能时迁至 `internal/protocol`，登录状态机只保留 passport/二维码专用逻辑。迁移时保持兼容测试，避免出现两份可漂移的 salt 或 App 版本常量。
+认证阶段形成的通用 BBS DS 与请求头在实现社区功能时归入 `internal/protocol`，登录状态机只保留 passport/二维码专用逻辑。模块拆分时保持兼容测试，避免出现两份可漂移的 salt 或 App 版本常量。
 
 核心接口：
 
@@ -259,7 +260,7 @@ SToken、MID、Cookie、DS 原文不得进入普通日志、JSON 输出、错误
 - BBS protocol profile（App 版本/salt/完整头）是否仍被接受。
 - `read-account`、`write-post`、`upload-image`、`upload-video` 能力的状态与判断依据。
 
-能力状态只允许 `available`、`account_denied`、`not_implemented`、`unknown`。`auth verify` 能通过角色/帖子等只读请求确认会话，也可调用已经证明无副作用的权限/配额端点；它不能为了“验证”而取上传凭据或试发内容。`write-post`、`upload-image` 等状态因此同时取决于本地适配器是否 ready、protocol profile 是否有效，以及是否存在安全的账号权限检查；缺少任一依据时报告 `unknown`，不能把 `retcode=0` 推断为全部可写。
+能力状态只允许 `available`、`account_denied`、`not_implemented`、`unknown`。`auth verify` 能通过角色/帖子等只读请求确认会话，也可调用已经证明无副作用的权限/配额端点；它不能为了“验证”而取上传凭据或试发内容。`write-post`、`upload-image` 等状态因此同时取决于本地适配器是否为 `adapter_ready`、protocol profile 是否有效，以及是否存在安全的账号权限检查；缺少任一依据时报告 `unknown`，不能把 `retcode=0` 推断为全部可写。
 
 “接口返回 retcode 0”不自动代表所有写能力都通过。每个写命令仍运行自己的非破坏性 preflight。登录失效、接口权限不足和 protocol profile 过期必须是不同错误码：
 
@@ -276,7 +277,7 @@ OPERATION_UNRESOLVED
 ORPHAN_MEDIA_ACK_REQUIRED
 ```
 
-写命令的通用 preflight 固定检查：本地适配器为 ready、会话只读验证通过、目标版区/角色参数可解析、ContentSpec 与本地媒体完全有效。视频再检查发布权限和剩余次数。图片上传参数会签发短期凭据，因此不属于 `--dry-run`；只有确认执行写操作后才获取。
+写命令的通用 preflight 固定检查：本地适配器为 `adapter_ready`、会话只读验证通过、目标版区/角色参数可解析、ContentSpec 与本地媒体完全有效。视频再检查发布权限和剩余次数。图片上传参数会签发短期凭据，因此不属于 `--dry-run`；只有确认执行写操作后才获取。
 
 ## 8. 接口映射
 
@@ -334,7 +335,7 @@ ORPHAN_MEDIA_ACK_REQUIRED
   → 返回 video_id + duration + cover URL
 ```
 
-视频是本项目中唯一需要单独技术验证的上传层。仓库证明米游社侧链路已成功，但 App 使用火山 VOD 客户端 SDK，尚没有可直接照搬的普通 REST 上传请求。实现前需要完成一个不发布帖子的 protocol spike：
+视频是本项目中唯一需要单独技术验证的上传层。上游证据仓库记录了米游社侧链路的成功样本，但 App 使用火山 VOD 客户端 SDK，尚没有可直接照搬的普通 REST 上传请求。实现前需要完成一个不发布帖子的 protocol spike：
 
 1. 获取并脱敏记录 `/video/api/getToken` 响应字段。
 2. 确认临时凭据、space、endpoint 和 session token 如何映射到上传客户端。
@@ -380,7 +381,7 @@ checkpoint 只保存规范化绝对路径的 SHA-256、大小、mtime、文件 M
 
 ## 12. 收藏工作流
 
-第一阶段实现 `favorite list`：
+阶段 A 实现 `favorite list`：
 
 1. 解析角色；多个角色时要求用户明确选择。
 2. 调用 `userFavouritePostList`，从空 offset 开始。
@@ -389,7 +390,7 @@ checkpoint 只保存规范化绝对路径的 SHA-256、大小、mtime、文件 M
 
 `favorite add/remove` 依赖 `collectPost` 的真实 body 和取消语义。接口矩阵只有路径，不能仅根据命令名假设 `is_cancel`、`post_id` 或 `collection_id` 字段。获得一组收藏/取消收藏的脱敏请求后同时实现两个命令和幂等状态测试。
 
-收藏夹目录的 create/edit/del/list/sort 等 14 个 collection 接口另设后续设计，不混进“收藏帖子”第一阶段。
+收藏夹目录的 create/edit/del/list/sort 等 14 个 collection 接口另设后续设计，不混进“收藏帖子”的阶段 A。
 
 ## 13. 输出、错误和隐私
 
@@ -455,9 +456,15 @@ checkpoint 只保存规范化绝对路径的 SHA-256、大小、mtime、文件 M
 
 ### 实机证据升级
 
-V/O/P 升级到可写的 `ready` 必须走一次人工授权的最小验收：使用用户明确指定的账号与小型媒体、先 `--dry-run`、只执行预先说明的单次写入、记录成功和一个安全错误响应、立即脱敏 fixture 并做秘密扫描。若产生帖子/草稿，清理也由用户显式命令执行；若媒体没有删除接口，验收记录必须保留 orphan 事实。任何真实调用都不进入普通 `go test`。
+V/O/P 升级到可写的 `adapter_ready` 必须走一次人工授权的最小验收：使用用户明确指定的账号与小型媒体、先 `--dry-run`、只执行预先说明的单次写入、记录成功和一个安全错误响应、立即脱敏 fixture 并做秘密扫描。若产生帖子/草稿，清理也由用户显式命令执行；若媒体没有删除接口，验收记录必须保留 orphan 事实。任何真实调用都不进入普通 `go test`。
 
 ## 15. 实现顺序
+
+### 阶段 0：认证基线
+
+- 按认证设计完成 `auth login/status/logout`、二维码状态机和凭据安全存储。
+- Game Token 成功交换 SToken 是阶段完成条件；不以伪 Token 或只读回退跨过门禁。
+- 完成合成 fixture、秘密扫描与三平台存储行为验收后，社区只读阶段才可读取会话。
 
 ### 阶段 A：共享协议和只读能力
 
@@ -493,6 +500,7 @@ V/O/P 升级到可写的 `ready` 必须走一次人工授权的最小验收：�
 
 | 阶段 | 完成标准 |
 |---|---|
+| 0 | 二维码状态机与 Token 交换 contract tests 通过；`status` 完全离线；`logout` 只做幂等本地删除；三平台安全存储分别标记编译/实机状态。 |
 | A | 所有只读命令通过 fixture/`httptest`；失效 Token、过期 protocol profile 和普通远端错误可区分；三平台交叉编译通过。 |
 | B | ContentSpec golden tests 通过；`--dry-run` 网络调用数为 0；图片上传、草稿写入失败时不会继续到下一写步骤。 |
 | C | image/article 及 draft-id 发布变体都有脱敏真实 fixture；结果明确区分公开、审核中和未知；网络结果未知时不重试。 |
@@ -503,10 +511,11 @@ V/O/P 升级到可写的 `ready` 必须走一次人工授权的最小验收：�
 
 ## 16. 参考依据
 
-- `mihoyo_bbs/docs/api/米游社接口清单_DS闭环验证.md`
-- `mihoyo_bbs/docs/api/视频上传与发布.md`
-- `mihoyo_bbs/docs/api/扫码登录与收藏夹_旧版服务整理.md`
-- `mihoyo_bbs/docs/api/接口面矩阵_全量.md`
+- [协议证据清单](evidence-manifest.md)：固定上游 commit、blob 与门禁成熟度
+- [上游 mihoyo-api 资料](https://cnb.cool/NRD-Tech/Reverse_Project/-/tree/mihoyo-api)中的 `mihoyo_bbs/docs/api/米游社接口清单_DS闭环验证.md`
+- 同一上游资料中的 `mihoyo_bbs/docs/api/视频上传与发布.md`
+- 同一上游资料中的 `mihoyo_bbs/docs/api/扫码登录与收藏夹_旧版服务整理.md`
+- 同一上游资料中的 `mihoyo_bbs/docs/api/接口面矩阵_全量.md`
 - [UIGF 用户 Token](https://uigf.org/zh/mihoyo-api-collection/hoyolab/user/token.html)
 - [UIGF 游戏账号信息](https://uigf.org/zh/mihoyo-api-collection/hoyolab/user/game_account_info.html)
 - [UIGF 米游社论坛文章](https://uigf.org/zh/mihoyo-api-collection/hoyolab/article/article.html)

@@ -7,8 +7,9 @@
 ## 设计文档
 
 - [总体架构](docs/architecture/README.md)
-- [扫码登录与凭据保存](docs/architecture/0002-qr-auth-and-credential-storage.md)
-- [社区功能与内容发布](docs/architecture/0003-community-features.md)
+- [扫码登录与凭据保存](docs/architecture/authentication.md)
+- [社区功能与内容发布](docs/architecture/community-features.md)
+- [协议证据清单](docs/architecture/evidence-manifest.md)
 
 ## 当前约束
 

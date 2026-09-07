@@ -1,6 +1,15 @@
 # miyoushe-cli 总体架构
 
-状态：设计基线
+状态：设计基线（功能实现仍受协议证据门禁约束）
+
+文档状态：
+
+| 文档 | 状态 | 含义 |
+|---|---|---|
+| 本文 | 设计基线 | 固定总体边界、原则、模块和交付顺序 |
+| [认证设计](authentication.md) | 设计基线 | 行为与安全契约已确定，线上协议仍需按证据验收 |
+| [社区功能设计](community-features.md) | 设计基线 | 目标命令与领域模型已确定，各写适配器按 V/O/P 和 fixture 独立门禁 |
+| [协议证据清单](evidence-manifest.md) | 可更新清单 | 固定上游快照及证据成熟度；不会自动改变设计决策 |
 
 ## 1. 目标
 
@@ -114,7 +123,7 @@ flowchart TD
 |---|---|---|
 | 语言与框架 | Go + Cobra | 单二进制、跨平台、成熟命令模型 |
 | 配置 | 首版不引入 Viper | 只有一个账号，避免秘密来源优先级复杂化 |
-| 账号模型 | 单一默认账号 | 用户已决定暂不设计多账号 |
+| 账号模型 | 单一默认账号 | 控制首版凭据、命令和错误处理复杂度；多账号不在当前范围 |
 | 登录完成条件 | 必须取得有效 SToken | Game Token 不具备等价语义 |
 | 复杂内容输入 | 版本化 JSON ContentSpec | 保留文字/图片/视频顺序，便于校验和复现 |
 | 内容输出 | 同一 block 模型生成 legacy、Quill 和 HTML | 避免多份正文不一致 |
@@ -137,8 +146,9 @@ mys operation  list / show / reconcile / cleanup
 
 ## 9. 交付阶段
 
-| 阶段 | 范围 | 进入条件 |
+| 阶段 | 范围 | 完成门槛/验收条件 |
 |---|---|---|
+| 0 | `auth login/status/logout`、凭据安全存储 | 二维码与 Token 交换 fixture、跨平台存储测试完整 |
 | A | 共享协议、`auth verify`、角色、帖子详情/列表、收藏列表 | 只读 fixture 与会话错误分类完整 |
 | B | ContentSpec、图片上传、草稿、dry-run、operation 基础 | 图片与草稿 body fixture 完整 |
 | C | 图文/长文发布、删除、草稿发布、对账 | 发布变体、审核结果和未知结果 fixture 完整 |
@@ -158,7 +168,8 @@ mys operation  list / show / reconcile / cleanup
 
 ## 11. 详细设计索引
 
-- [扫码登录与凭据保存](0002-qr-auth-and-credential-storage.md)
-- [社区功能与内容发布](0003-community-features.md)
+- [扫码登录与凭据保存](authentication.md)
+- [社区功能与内容发布](community-features.md)
+- [协议证据清单](evidence-manifest.md)
 
 详细文档中的接口证据等级、fixture 缺口和阶段门禁优先于本页摘要。发生冲突时，应先更新详细文档和相应决策，再修改本页。
