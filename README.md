@@ -11,13 +11,19 @@
 - [社区功能与内容发布](docs/architecture/community-features.md)
 - [协议证据清单](docs/architecture/evidence-manifest.md)
 
+## 上游接口参考
+
+- [CNB `mihoyo-api` 脱敏快照](docs/reference/cnb-mihoyo-api/README.md)
+
+参考快照用于追溯接口发现、DS、扫码、收藏、帖子/草稿和视频链路，不表示所有接口已经达到可发布状态。
+
 ## 当前约束
 
 - 首版只支持一个默认社区账号。
 - Game Token 必须成功交换为 SToken；不设计只读回退。
 - 未取得完整脱敏请求样本与契约测试的写接口不会开放。
 - 视频上传必须先完成火山 VOD 临时凭据协议验证。
-- Token、Cookie、DS、上传签名和临时密钥不得进入仓库、日志或测试 fixture。
+- Token、Cookie、上传签名、临时密钥，以及带有效会话/账号上下文的实时 DS 不得进入仓库、日志或测试 fixture。参考文档可以保留不含账号数据、已经失效且仅用于算法校验的 DS 向量。
 
 ## 状态
 

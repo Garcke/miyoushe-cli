@@ -512,10 +512,11 @@ V/O/P 升级到可写的 `adapter_ready` 必须走一次人工授权的最小验
 ## 16. 参考依据
 
 - [协议证据清单](evidence-manifest.md)：固定上游 commit、blob 与门禁成熟度
-- [上游 mihoyo-api 资料](https://cnb.cool/NRD-Tech/Reverse_Project/-/tree/mihoyo-api)中的 `mihoyo_bbs/docs/api/米游社接口清单_DS闭环验证.md`
-- 同一上游资料中的 `mihoyo_bbs/docs/api/视频上传与发布.md`
-- 同一上游资料中的 `mihoyo_bbs/docs/api/扫码登录与收藏夹_旧版服务整理.md`
-- 同一上游资料中的 `mihoyo_bbs/docs/api/接口面矩阵_全量.md`
+- [CNB `mihoyo-api` 脱敏参考快照](../reference/cnb-mihoyo-api/README.md)
+- [米游社接口清单与 DS 闭环](../reference/cnb-mihoyo-api/snapshot/docs/api/米游社接口清单_DS闭环验证.md)
+- [视频上传与发布](../reference/cnb-mihoyo-api/snapshot/docs/api/视频上传与发布.md)
+- [扫码登录与收藏夹](../reference/cnb-mihoyo-api/snapshot/docs/api/扫码登录与收藏夹_旧版服务整理.md)
+- [接口面矩阵](../reference/cnb-mihoyo-api/snapshot/docs/api/接口面矩阵_全量.md)
 - [UIGF 用户 Token](https://uigf.org/zh/mihoyo-api-collection/hoyolab/user/token.html)
 - [UIGF 游戏账号信息](https://uigf.org/zh/mihoyo-api-collection/hoyolab/user/game_account_info.html)
 - [UIGF 米游社论坛文章](https://uigf.org/zh/mihoyo-api-collection/hoyolab/article/article.html)

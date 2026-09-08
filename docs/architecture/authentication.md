@@ -17,6 +17,8 @@
 
 上游资料记录了 Game Token 交换 SToken 曾失败的情况。本设计不展开只读回退兼容性研究，也不假定服务端交换必然成功。CLI 必须如实报告交换失败，并保留此前保存的凭据。
 
+[CNB 参考快照](../reference/cnb-mihoyo-api/snapshot/docs/api/扫码登录与收藏夹_旧版服务整理.md)进一步记录：HK4E 二维码产出的游戏侧凭据曾被严格 BBS 接口拒绝。因此 `getTokenByGameToken` 是阶段 0 的协议可行性门禁，不是已经宣称成功的能力。只有取得脱敏的成功交换样本，并证明所得 SToken 可通过严格只读接口验证，阶段 0 才完成；否则保持阻塞，不自动改走 LToken、Cookie Token 或只读模式。
+
 ## 2. 方案选择
 
 选用 Go、Cobra、直接 HTTP 调用及用户配置目录中的受权限保护 JSON 文件。相对于包装 Python，部署不需要第二个运行时；相对于系统钥匙串，能覆盖无桌面 Linux 环境。
@@ -135,9 +137,10 @@ Game Token 仅用于当前交换，不额外落盘；不保存整份响应、手
 
 ## 8. 参考依据
 
-- [上游 mihoyo-api 资料](https://cnb.cool/NRD-Tech/Reverse_Project/-/tree/mihoyo-api)中的 `mihoyo_bbs/tools/qr_login.py`：HK4E 扫码及交换尝试；本设计不继承其交换失败后保存伪 SToken 的行为。
-- 同一上游资料中的 `mihoyo_bbs/tools/mys_ds_gen.py`：DS 参考与测试向量。
-- 同一上游资料中的 `mihoyo_bbs/docs/api/扫码登录与收藏夹_旧版服务整理.md`：已测二维码请求和已知登录限制。
+- [CNB `mihoyo-api` 脱敏参考快照](../reference/cnb-mihoyo-api/README.md)：固定来源与导入处理说明。
+- [扫码登录与收藏夹](../reference/cnb-mihoyo-api/snapshot/docs/api/扫码登录与收藏夹_旧版服务整理.md)：已测二维码请求和已知登录限制。
+- [DS 抓取记录](../reference/cnb-mihoyo-api/snapshot/docs/DS_CAPTURE_RECORD.md)：DS 参考与测试向量来源。
+- 上游 `mihoyo_bbs/tools/qr_login.py` 与 `mys_ds_gen.py`：只作为协议证据，不复制为本项目实现。
 - [UIGF Game Token 扫码](https://uigf.org/zh/mihoyo-api-collection/hoyolab/login/qrcode_hk4e.html)。
 - [UIGF Token 交换](https://uigf.org/zh/mihoyo-api-collection/hoyolab/user/token.html)。
 - [UIGF 鉴权与 Token 区别](https://uigf.org/zh/mihoyo-api-collection/other/authentication.html)。

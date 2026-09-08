@@ -15,16 +15,23 @@
 - 仓库：[NRD-Tech/Reverse_Project](https://cnb.cool/NRD-Tech/Reverse_Project/-/tree/mihoyo-api)
 - 分支名：`mihoyo-api`
 - 固定 commit：[`7afa9b30602cea79ce32b3ff70f7c8b352b3d825`](https://cnb.cool/NRD-Tech/Reverse_Project/-/commit/7afa9b30602cea79ce32b3ff70f7c8b352b3d825)
+- 本地副本：[CNB `mihoyo-api` 脱敏参考快照](../reference/cnb-mihoyo-api/README.md)
 - 固定原则：评审应按 commit 和 blob 校验，不能只依赖可变分支页面。
 
 | 上游路径 | Git blob | 用途 |
 |---|---|---|
+| `mihoyo_bbs/docs/api/README.md` | `49a071549dfa5638c6942a04b49762a65be441fc` | API 文档总索引与凭据能力摘要 |
+| `mihoyo_bbs/docs/api/getFp_设备指纹.md` | `087d8965a6bb4259179e7000c065081d4b32e977` | 设备指纹请求与错误语义 |
 | `mihoyo_bbs/docs/api/米游社接口清单_DS闭环验证.md` | `a643140361a4c6b07f07f64edac9f4e8aa4b3769` | DS、角色、帖子、草稿、图片等接口复现摘要 |
 | `mihoyo_bbs/docs/api/视频上传与发布.md` | `ae3027cf9c3df9759b5c0c5743cf8e248cd60352` | App 视频上传与发布链路 |
 | `mihoyo_bbs/docs/api/扫码登录与收藏夹_旧版服务整理.md` | `bf69d1d9fc8fdbcf4ee9fbba00dd76fdee2be1eb` | 二维码、登录限制和收藏夹历史服务 |
 | `mihoyo_bbs/docs/api/接口面矩阵_全量.md` | `118d830dadbf6c6c6ef288152c7bd555fbf32560` | 路径盘点；部分方法为启发式推断 |
+| `mihoyo_bbs/docs/DS_CAPTURE_RECORD.md` | `f1d0a1025b7bdcfa999e4e34bebe642a9bd94777` | DS salt 与算法逆向记录 |
+| `mihoyo_bbs/docs/UNPACK_REPORT_2.114.0.md` | `69e613bc1a8399ca311208816a8c9303abfc7b9e` | App 2.114.0 dex 来源与完整性说明 |
 | `mihoyo_bbs/tools/qr_login.py` | `a51759247fbe6d9baebcc5505eb0737649dbda64` | HK4E 扫码和交换尝试的参考实现 |
 | `mihoyo_bbs/tools/mys_ds_gen.py` | `7aaee2d3ba97b327c790511346635d7b5b97d69a` | DS 参考和测试向量 |
+
+表中的 blob 是上游原文标识。本仓库的本地副本经过账号占位符替换和链接修复，因此相应本地文件 hash 预期不同；处理清单保存在快照 README 中。
 
 ## 3. 证据等级
 

@@ -171,5 +171,6 @@ mys operation  list / show / reconcile / cleanup
 - [扫码登录与凭据保存](authentication.md)
 - [社区功能与内容发布](community-features.md)
 - [协议证据清单](evidence-manifest.md)
+- [CNB `mihoyo-api` 脱敏参考快照](../reference/cnb-mihoyo-api/README.md)
 
 详细文档中的接口证据等级、fixture 缺口和阶段门禁优先于本页摘要。发生冲突时，应先更新详细文档和相应决策，再修改本页。
