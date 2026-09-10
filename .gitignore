@@ -1,0 +1,13 @@
+# 设计文档与协议证据快照不入库（本地保留）
+docs/
+
+# 构建产物（根目录锚定，避免误伤 cmd/mys/ 源码）
+/mys
+/mys.exe
+*.exe
+/dist/
+
+# 本地测试与临时文件
+credentials.json
+*.tmp
+.DS_Store
