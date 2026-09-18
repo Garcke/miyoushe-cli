@@ -41,6 +41,11 @@ const (
 	// HK4E 扫码通道 app_id；实测返回 app_name=绝区零/nap_cn，bbs=true。
 	AppIDQR = "12"
 
+	// AppIDPassport 是 ma-cn-passport 扫码接口（createQRLogin/queryQRLoginStatus）
+	// 的 x-rpc-app_id，取米游社 App 身份；与 VerifyKey 同值
+	// （2026-09-15 实测：bll8iq97cem8 建码返回 token_types=1，直出 SToken）。
+	AppIDPassport = VerifyKey
+
 	// DS 盐。SaltBBS 随 App 版本轮换（2.114.0）；SaltPassport 硬编码于 SDK。
 	SaltBBS      = "d64014da690671f8704695e993130f4c"
 	SaltPassport = "JwYDpKvLj6MrMqqYU6jTKF17KNO2PXoS"
@@ -60,6 +65,9 @@ const (
 	HostTakumi         = "api-takumi.mihoyo.com"
 	HostTakumiMiyoushe = "api-takumi.miyoushe.com"
 	HostBBS            = "bbs-api.miyoushe.com"
+	// HostPassportAPI 是 passport SDK 的登录基座（PorteInfo.getLoginBaseUrl
+	// 真机实捕：ma-cn-session/app/* 全部走它，不走 api-takumi）。
+	HostPassportAPI = "passport-api.mihoyo.com"
 )
 
 const (
@@ -154,6 +162,16 @@ func WithDS(h http.Header, ds string) http.Header {
 // WithCookie 在头集合上叠加 Cookie 头。
 func WithCookie(h http.Header, cookie string) http.Header {
 	h.Set("Cookie", cookie)
+	return h
+}
+
+// PassportQRHeaders 构造 ma-cn-passport 扫码接口（createQRLogin /
+// queryQRLoginStatus）公共头：client_type=2（米游社 App 语义）并追加
+// x-rpc-app_id。实测无 DS 也可用，调用方按需叠加 passport DS（与请求体
+// 字节绑定）。2026-09-15 实测通过。
+func PassportQRHeaders(dev DeviceContext) http.Header {
+	h := CommonHeaders(ClientTypeAndroid, dev)
+	h.Set("x-rpc-app_id", AppIDPassport)
 	return h
 }
 

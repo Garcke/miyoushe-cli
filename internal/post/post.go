@@ -5,9 +5,11 @@ package post
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 
 	"mihoyo_cli/internal/api"
 	"mihoyo_cli/internal/output"
@@ -72,6 +74,31 @@ type contentRaw struct {
 	Imgs     []imgRaw `json:"imgs"`
 }
 
+// UnmarshalJSON 容忍 content 的两种线上形态（2026-09-15 实测）：
+// 读接口（getPostFull / user_instant / 收藏列表）返回字符串（纯文本或 HTML），
+// 发布/草稿域为 {describe, imgs} 对象。字符串形态整体记入 Describe。
+func (c *contentRaw) UnmarshalJSON(b []byte) error {
+	s := strings.TrimSpace(string(b))
+	if s == "null" || s == `""` {
+		return nil
+	}
+	if len(s) >= 2 && s[0] == '"' {
+		var v string
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		c.Describe = v
+		return nil
+	}
+	type plain contentRaw
+	var p plain
+	if err := json.Unmarshal(b, &p); err != nil {
+		return err
+	}
+	*c = contentRaw(p)
+	return nil
+}
+
 type vodRaw struct {
 	VideoID    api.FlexString `json:"video_id"`
 	Cover      api.FlexString `json:"cover"`
@@ -108,6 +135,14 @@ func (e *Entry) Summary() (Summary, *output.Error) {
 type vodEntry struct {
 	Vod *vodRaw `json:"vod"`
 	vodRaw
+}
+
+// postWrapper 容忍 getPostFull 的双层形态（2026-09-15 实测）：
+// data.post 是包装层，内层 data.post.post 才是帖子本体；
+// 旧样本若为单层，回退到包装层自身字段。
+type postWrapper struct {
+	Post *postRaw `json:"post"`
+	postRaw
 }
 
 // Service 是帖子只读服务。
@@ -194,8 +229,8 @@ func (s *Service) Get(ctx context.Context, sess session.Session, postID string) 
 	q.Set("post_id", postID)
 
 	var data struct {
-		Post    *postRaw   `json:"post"`
-		VodList []vodEntry `json:"vod_list"`
+		Post    *postWrapper `json:"post"`
+		VodList []vodEntry   `json:"vod_list"`
 	}
 	if oerr := s.Client.DoJSON(ctx, "GET", "/post/api/getPostFull", q, nil, headers(sess), &data); oerr != nil {
 		return Detail{}, oerr
@@ -203,17 +238,21 @@ func (s *Service) Get(ctx context.Context, sess session.Session, postID string) 
 	if data.Post == nil {
 		return Detail{}, output.Err(output.CodeRemoteRejected, "帖子详情响应缺少 post 字段")
 	}
-	sum, oerr := data.Post.summary()
+	raw := data.Post.Post
+	if raw == nil {
+		raw = &data.Post.postRaw
+	}
+	sum, oerr := raw.summary()
 	if oerr != nil {
 		return Detail{}, oerr
 	}
 	d := Detail{Summary: sum}
-	if data.Post.Author != nil {
-		d.AuthorUID = data.Post.Author.UID.String()
+	if raw.Author != nil {
+		d.AuthorUID = raw.Author.UID.String()
 	}
-	if data.Post.Content != nil {
-		d.Describe = data.Post.Content.Describe
-		for _, img := range data.Post.Content.Imgs {
+	if raw.Content != nil {
+		d.Describe = raw.Content.Describe
+		for _, img := range raw.Content.Imgs {
 			if img.URL != "" {
 				d.Images = append(d.Images, img.URL.String())
 			}
@@ -266,4 +305,228 @@ func ListDataJSON(p Page) any {
 		"items":    items,
 		"has_more": p.HasMore,
 	}
+}
+
+// PublishOptions 是发布帖子的内容输入。StructuredContent 传 Quill delta
+// 序列化后的 JSON 字符串；DraftID 为可选的先存草稿 id（实测链路：save→publish）。
+type PublishOptions struct {
+	Subject           string
+	ContentHTML       string
+	StructuredContent string
+	ForumID           string // f_forum_id / forum_id 同值发送
+	GIDs              int
+	ViewType          int // 1=视频混排 2=纯图文 5=长文
+	Cover             string
+	DraftID           string
+}
+
+// PublishResult 是发布结果。Allowed=false 表示被版区等级门槛拦截
+// （实测：rc=0 但 post_id=0、post_review_id=0，GateMessage 携带人话提示）；
+// ReviewID 非 0 表示进入审核流（审核中帖子不可见，撤回走 review/undo，未实现）。
+type PublishResult struct {
+	PostID      string
+	ReviewID    string
+	Allowed     bool
+	GateMessage string
+}
+
+type releaseCheckRaw struct {
+	CanRelease bool   `json:"can_release"`
+	Msg        string `json:"msg"`
+}
+
+// parseReleaseEnvelope 解析 releasePost/v2 响应（文本帖与视频帖共用）。
+// 门槛拦截形态（实测）：post_id=0 + release_check_result.can_release=false，
+// rc 仍为 0；无 post_id 也无门槛信息时报“结果未知”。
+func parseReleaseEnvelope(raw json.RawMessage) (PublishResult, *output.Error) {
+	var data struct {
+		PostID             api.FlexString   `json:"post_id"`
+		PostReviewID       api.FlexString   `json:"post_review_id"`
+		ReleaseCheckResult *releaseCheckRaw `json:"release_check_result"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return PublishResult{}, output.Err(output.CodeRemoteRejected, "发布响应 data 结构与预期不符")
+	}
+	res := PublishResult{Allowed: true}
+	if data.PostID.String() != "" && data.PostID.String() != "0" {
+		res.PostID = data.PostID.String()
+	}
+	res.ReviewID = data.PostReviewID.String()
+	if res.ReviewID == "0" {
+		res.ReviewID = ""
+	}
+	if res.PostID == "" && data.ReleaseCheckResult != nil && !data.ReleaseCheckResult.CanRelease {
+		res.Allowed = false
+		res.GateMessage = data.ReleaseCheckResult.Msg
+	}
+	if res.PostID == "" && res.Allowed && res.ReviewID == "" {
+		return PublishResult{}, output.Err(output.CodeRemoteRejected,
+			"发布响应既无 post_id 也无 review_id，结果未知")
+	}
+	return res, nil
+}
+
+// VideoPublishOptions 是视频帖发布输入（2026-09-18 App 实抓契约）。
+// VideoID 来自秒传（isExist 命中）或 App 预上传；MetaContent 由本方法
+// 程序化构造（describe 文本块 + vods 引用），服务端会把它合并进
+// structured_content 并自动补 vod 封面。
+type VideoPublishOptions struct {
+	Subject       string
+	Text          string
+	VideoID       string
+	CoverURL      string
+	ForumID       string // f_forum_id / forum_id
+	ForumCateID   string // 版区分类 id（实抓因缘精灵 951 区为 "15"）
+	GIDs          string // 实测为字符串形态（"10"）
+	TopicIDs      []string
+	BlockReplyImg int // 0/1，int 契约（boolean → -502）
+}
+
+// PublishVideo 发布视频帖（releasePost/v2，view_type=5 + meta_content.vods）。
+// 实测：视频帖无需先存草稿；gids 为字符串；服务端按风控决定是否进审核
+// （进审核时 post_id=0、返回 post_review_id，撤回走 UndoReview）。
+func (s *Service) PublishVideo(ctx context.Context, sess session.Session, o VideoPublishOptions) (PublishResult, *output.Error) {
+	if o.Subject == "" {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "帖子标题不能为空")
+	}
+	if o.VideoID == "" {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "video-id 不能为空")
+	}
+	if o.CoverURL == "" {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "视频帖必须带封面 URL")
+	}
+	if o.ForumID == "" || o.GIDs == "" {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "forum-id 与 gids 不能为空")
+	}
+
+	meta, err := json.Marshal(map[string]any{
+		"describe": []map[string]any{{"insert": o.Text}},
+		"vods":     []map[string]any{{"id": o.VideoID}},
+	})
+	if err != nil {
+		return PublishResult{}, output.Err(output.CodeInternal, "构造 meta_content 失败: %v", err)
+	}
+	sc, err := json.Marshal([]map[string]any{{"insert": o.Text}})
+	if err != nil {
+		return PublishResult{}, output.Err(output.CodeInternal, "构造 structured_content 失败: %v", err)
+	}
+	topics := o.TopicIDs
+	if topics == nil {
+		topics = []string{}
+	}
+	body := map[string]any{
+		"block_reply_img":         o.BlockReplyImg, // int 0/1；boolean → -502
+		"collection_id":           0,
+		"content":                 o.Text,
+		"cover":                   o.CoverURL,
+		"draft_id":                "",
+		"forum_cate_id":           o.ForumCateID,
+		"f_forum_id":              o.ForumID,
+		"future_release_time":     0,
+		"gids":                    o.GIDs,
+		"game_uid":                "",
+		"is_original":             0,
+		"is_pre_publication":      false,
+		"is_profit":               false,
+		"meta_content":            string(meta),
+		"post_id":                 "",
+		"region":                  "",
+		"release_time_type":       "1",
+		"republish_authorization": 0,
+		"review_id":               "",
+		"structured_content":      string(sc),
+		"subject":                 o.Subject,
+		"topic_ids":               topics,
+		"user_ai_content_choice":  "USER_AI_CONTENT_CHOICE_NOT_AI",
+		"view_type":               5,
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return PublishResult{}, output.Err(output.CodeInternal, "构造视频帖发布请求失败: %v", err)
+	}
+
+	raw, oerr := s.Client.Do(ctx, "POST", "/post/api/releasePost/v2", nil, b, headers(sess))
+	if oerr != nil {
+		return PublishResult{}, oerr
+	}
+	return parseReleaseEnvelope(raw)
+}
+
+// UndoReview 撤回处于审核中的帖子（实测审核中帖子的“删除”即此操作；
+// 已正式发布的帖子用 Delete）。
+func (s *Service) UndoReview(ctx context.Context, sess session.Session, reviewID string) *output.Error {
+	if reviewID == "" {
+		return output.Err(output.CodeInputInvalid, "review-id 不能为空")
+	}
+	b, err := json.Marshal(struct {
+		ReviewID string `json:"review_id"`
+	}{ReviewID: reviewID})
+	if err != nil {
+		return output.Err(output.CodeInternal, "构造撤审请求失败: %v", err)
+	}
+	return s.Client.DoJSON(ctx, "POST", "/post/api/review/undo", nil, b, headers(sess), &struct{}{})
+}
+
+// Publish 发布帖子（releasePost/v2）。只返回服务端结果，不代用户判断门槛去留。
+func (s *Service) Publish(ctx context.Context, sess session.Session, opts PublishOptions) (PublishResult, *output.Error) {
+	if opts.Subject == "" {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "帖子标题不能为空")
+	}
+	if opts.ForumID == "" {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "forum-id 不能为空")
+	}
+	if opts.ViewType == 0 {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "view-type 必须显式指定（1/2/5）")
+	}
+	if opts.GIDs == 0 {
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "gids 不能为空")
+	}
+
+	body := map[string]any{
+		"is_original": 0,
+		"subject":     opts.Subject,
+		"gids":        opts.GIDs,
+		"contribution_act": map[string]any{
+			"act_id": nil, "game_uid": nil, "title": nil,
+			"game_region": nil, "game_nickname": nil,
+		},
+		"f_forum_id":         opts.ForumID,
+		"uid":                sess.UID,
+		"topic_ids":          []any{},
+		"review_id":          "",
+		"is_profit":          false,
+		"is_pre_publication": false,
+		"cover":              opts.Cover,
+		"lottery":            map[string]any{},
+		"forum_id":           opts.ForumID,
+		"draft_id":           opts.DraftID,
+		"structured_content": opts.StructuredContent,
+		"link_card_ids":      []any{},
+		"view_type":          opts.ViewType,
+		"content":            opts.ContentHTML,
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return PublishResult{}, output.Err(output.CodeInternal, "构造发布请求失败: %v", err)
+	}
+	raw, oerr := s.Client.Do(ctx, "POST", "/post/api/releasePost/v2", nil, b, headers(sess))
+	if oerr != nil {
+		return PublishResult{}, oerr
+	}
+	return parseReleaseEnvelope(raw)
+}
+
+// Delete 删除自己的帖子（operate_type=0，实测删帖原因列表第一类语义）。
+func (s *Service) Delete(ctx context.Context, sess session.Session, postID string) *output.Error {
+	if postID == "" {
+		return output.Err(output.CodeInputInvalid, "post-id 不能为空")
+	}
+	b, err := json.Marshal(struct {
+		OperateType int    `json:"operate_type"`
+		PostID      string `json:"post_id"`
+	}{OperateType: 0, PostID: postID})
+	if err != nil {
+		return output.Err(output.CodeInternal, "构造删帖请求失败: %v", err)
+	}
+	return s.Client.DoJSON(ctx, "POST", "/post/api/deletePost", nil, b, headers(sess), &struct{}{})
 }

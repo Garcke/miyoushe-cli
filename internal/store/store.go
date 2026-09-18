@@ -30,6 +30,9 @@ const SchemaVersion = 1
 // FlowV1 标识 HK4E 扫码 + Game Token 交换链路（认证设计 §5）。
 const FlowV1 = "hk4e_game_token_exchange"
 
+// FlowV2 标识 ma-cn-passport 扫码直出 SToken 链路（2026-09-15 实测打通）。
+const FlowV2 = "ma_cn_passport_qr_login"
+
 // Credentials 是 credentials.json 的 v1 内容。
 type Credentials struct {
 	SchemaVersion int     `json:"schema_version"`
@@ -45,11 +48,16 @@ type Credentials struct {
 	ExpiresAt     *string `json:"expires_at"` // 未知时为 null，不伪造固定有效期
 }
 
-// NewCredentials 构造一份通过校验的 v1 凭据。
+// NewCredentials 构造一份通过校验的 v1 凭据（HK4E 换票链路）。
 func NewCredentials(uid, mid, stoken, deviceID, deviceFP string, now time.Time) *Credentials {
+	return NewCredentialsFlow(FlowV1, uid, mid, stoken, deviceID, deviceFP, now)
+}
+
+// NewCredentialsFlow 按指定登录链路构造一份通过校验的凭据。
+func NewCredentialsFlow(flow, uid, mid, stoken, deviceID, deviceFP string, now time.Time) *Credentials {
 	return &Credentials{
 		SchemaVersion: SchemaVersion,
-		Flow:          FlowV1,
+		Flow:          flow,
 		UID:           uid,
 		MID:           mid,
 		TokenKind:     "stoken",
@@ -66,7 +74,7 @@ func (c *Credentials) validate() error {
 	if c.SchemaVersion != SchemaVersion {
 		return fmt.Errorf("schema_version=%d 不是受支持的版本 %d", c.SchemaVersion, SchemaVersion)
 	}
-	if c.Flow != FlowV1 {
+	if c.Flow != FlowV1 && c.Flow != FlowV2 {
 		return fmt.Errorf("flow=%q 不是受支持的登录链路", c.Flow)
 	}
 	if c.TokenKind != "stoken" {

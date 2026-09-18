@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -213,5 +214,21 @@ func TestListMeta(t *testing.T) {
 	m2 := ListMeta{LastID: "9"}
 	if m2.Cursor() != "9" || !m2.HasMore() {
 		t.Errorf("ListMeta fallback = %+v", m2)
+	}
+	// 实测（2026-09-15）：空列表返回 "next_offset": 0（JSON number），
+	// 必须容忍 number 形态，且 0 视同无游标。
+	var m3 ListMeta
+	if err := json.Unmarshal([]byte(`{"is_last":true,"next_offset":0,"list":[]}`), &m3); err != nil {
+		t.Fatalf("number next_offset 应可解析: %v", err)
+	}
+	if m3.Cursor() != "" || m3.HasMore() {
+		t.Errorf("next_offset=0 应视同无游标: %+v", m3)
+	}
+	var m4 ListMeta
+	if err := json.Unmarshal([]byte(`{"is_last":false,"next_offset":20}`), &m4); err != nil {
+		t.Fatalf("number next_offset=20 应可解析: %v", err)
+	}
+	if m4.Cursor() != "20" {
+		t.Errorf("number next_offset=20 的游标 = %q", m4.Cursor())
 	}
 }
