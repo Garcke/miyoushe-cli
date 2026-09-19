@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"time"
 
 	"mihoyo_cli/internal/api"
 	"mihoyo_cli/internal/output"
@@ -177,6 +178,15 @@ func (s *Service) GetUploadToken(ctx context.Context, sess session.Session, md5 
 	return &data, nil
 }
 
+// retcodeUploadCallbackPending 是 Commit 后异步回调未完成时 getVideoID
+// 返回的明确状态；只对它做有界退避重试（ARCHITECTURE-V2 §8.2），
+// 其它错误不泛化为“等等就好”。
+const retcodeUploadCallbackPending = 16006
+
+// getVideoIDMaxPollAttempts 是 16006 状态下的最大请求次数（含首次），
+// 退避 1s/2s/4s/8s，总等待上界 15s。
+const getVideoIDMaxPollAttempts = 5
+
 // GetVideoID 用 VOD 返回的 file_id（BDVideoInfo.mVideoId / Commit 的 Vid）
 // 登记并换取米游社 video_id。返回 video_id 与服务端确认的时长（毫秒）。
 func (s *Service) GetVideoID(ctx context.Context, sess session.Session, fileID, md5 string) (string, int64, *output.Error) {
@@ -188,15 +198,38 @@ func (s *Service) GetVideoID(ctx context.Context, sess session.Session, fileID, 
 	q.Set("md5", md5)
 	q.Set("video_provider", VideoProvider)
 
+	backoff := time.Second
 	var data PreUpload
-	if oerr := s.Client.DoJSON(ctx, "GET", "/video/api/getVideoID", q, nil, headers(sess), &data); oerr != nil {
-		return "", 0, oerr
+	for attempt := 1; ; attempt++ {
+		var oerr *output.Error
+		if oerr = s.Client.DoJSON(ctx, "GET", "/video/api/getVideoID", q, nil, headers(sess), &data); oerr == nil {
+			break
+		}
+		if oerr.Retcode != retcodeUploadCallbackPending || attempt >= getVideoIDMaxPollAttempts {
+			return "", 0, oerr
+		}
+		if !sleepBackoff(ctx, backoff) {
+			return "", 0, output.Err(output.CodeCancelled, "已取消")
+		}
+		backoff *= 2
 	}
 	vid := string(data.VideoID)
 	if vid == "" {
 		return "", 0, output.Err(output.CodeRemoteRejected, "getVideoID 未返回 video_id")
 	}
 	return vid, data.VideoDurationMS(), nil
+}
+
+// sleepBackoff 可取消的退避休眠；返回 false 表示 ctx 已取消。
+func sleepBackoff(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
 }
 
 // UpdateCover 设置视频封面。body 为 {"video_id","cover_url"}。

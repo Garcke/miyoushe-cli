@@ -181,3 +181,43 @@ func TestPostShow_MissingPostField(t *testing.T) {
 		t.Fatalf("缺 post 字段应失败: %v", oerr)
 	}
 }
+
+func TestPostList_LimitContinuity(t *testing.T) {
+	// --limit 5：首页请求 size 必须=5，且 5 条全部消费后游标指向第 5 条之后，
+	// 不允许取整页 20 条后跳过中间条目。
+	var gotSize, gotOffset string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		gotSize, gotOffset = q.Get("size"), q.Get("last_id")
+		if q.Get("last_id") == "" {
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+				{"post":{"post_id":"a1","subject":"s1","view_type":2}},
+				{"post":{"post_id":"a2","subject":"s2","view_type":2}},
+				{"post":{"post_id":"a3","subject":"s3","view_type":2}},
+				{"post":{"post_id":"a4","subject":"s4","view_type":2}},
+				{"post":{"post_id":"a5","subject":"s5","view_type":2}}],
+				"is_last":false,"last_id":"off5"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+			{"post":{"post_id":"a6","subject":"s6","view_type":2}}],"is_last":true}}`)
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	page, oerr := New(c).List(context.Background(), sessionSessionForTest(), ListOptions{Limit: 5})
+	if oerr != nil {
+		t.Fatalf("List: %v", oerr)
+	}
+	if gotSize != "5" {
+		t.Errorf("首页请求 size = %s, want 5（剩余配额）", gotSize)
+	}
+	if gotOffset != "" {
+		t.Errorf("首页 last_id 应为空: %s", gotOffset)
+	}
+	if len(page.Items) != 5 || page.Items[4].PostID != "a5" {
+		t.Fatalf("items = %+v", page.Items)
+	}
+	if page.NextCursor != "off5" || !page.HasMore {
+		t.Errorf("page = %+v", page)
+	}
+}

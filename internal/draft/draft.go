@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 
 	"mihoyo_cli/internal/api"
@@ -56,6 +57,8 @@ type Page struct {
 	Items      []Draft
 	NextCursor string
 	HasMore    bool
+	// Warnings 携带面向用户的提示（如跨桶预览不能续页），CLI 层负责展示。
+	Warnings []string
 }
 
 type draftRaw struct {
@@ -105,37 +108,66 @@ func (raw *draftRaw) toDraft() (Draft, *output.Error) {
 	}, nil
 }
 
-// List 拉取草稿箱。ViewType=0 时合并 1/2/5 三桶各首页（不支持游标）；
-// 指定 ViewType 时保持单桶游标语义。
+// List 拉取草稿箱。
+// ViewType=0：跨桶首页预览（ARCHITECTURE-V2 §6）——分别取 1/2/5 桶首页，
+// 按 draft_id 去重、updated_at 降序 + draft_id 升序稳定排序后截断到 limit；
+// 任一桶还有后续或结果被截断时 HasMore=true，并返回“预览不能续页”提示；
+// 此模式不接受 Cursor。ViewType=1/2/5：单桶语义，服务端不透明游标续翻。
 func (s *Service) List(ctx context.Context, sess session.Session, opts ListOptions) (Page, *output.Error) {
 	if opts.ViewType == 0 {
+		if opts.Cursor != "" {
+			return Page{}, output.Err(output.CodeInputInvalid,
+				"跨桶首页预览不支持 --cursor 续页；请用 --view-type 1|2|5 --cursor 遍历单桶")
+		}
 		return s.listAllBuckets(ctx, sess, opts)
+	}
+	if !validBucket(opts.ViewType) {
+		return Page{}, output.Err(output.CodeInputInvalid,
+			"--view-type 仅支持 1、2、5（实测 view_type 按草稿类型分桶）")
 	}
 	return s.listBucket(ctx, sess, opts)
 }
 
-// listAllBuckets 合并各草稿类型桶的首页。跨桶深分页未实现：
-// 每桶取一页（size=limit），合并后截断到 limit；HasMore 如实上报。
+func validBucket(vt int) bool {
+	for _, b := range listViewTypes {
+		if vt == b {
+			return true
+		}
+	}
+	return false
+}
+
+// listAllBuckets 跨桶首页预览（ARCHITECTURE-V2 §6）：先取每桶一页
+// （size=min(pageSize, limit)），合并去重、按 updated_at 降序 + draft_id 升序
+// 稳定排序，再截断到 limit；被截断或任一桶还有后续都如实标记 has_more，
+// 并提示预览不能续页。不返回全局游标（无法据此续页）。
 func (s *Service) listAllBuckets(ctx context.Context, sess session.Session, opts ListOptions) (Page, *output.Error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = pageSize
 	}
-	page := Page{Items: []Draft{}}
+	perBucket := pageSize
+	if limit < perBucket {
+		perBucket = limit
+	}
+
+	seen := map[string]bool{}
+	var merged []Draft
+	anyBucketHasMore := false
 	for _, vt := range listViewTypes {
 		q := url.Values{}
 		q.Set("view_type", strconv.Itoa(vt))
-		q.Set("size", strconv.Itoa(limit))
+		q.Set("size", strconv.Itoa(perBucket))
 		q.Set("offset", "")
 		var data struct {
 			api.ListMeta
 			List []listEntry `json:"list"`
 		}
 		if oerr := s.Client.DoJSON(ctx, "GET", "/post/api/draft/list", q, nil, headers(sess), &data); oerr != nil {
-			if len(page.Items) > 0 {
+			if len(merged) > 0 {
 				oe := output.Err(output.CodeRemoteRejected,
 					"草稿列表（view_type=%d）读取失败: %s", vt, oerr.Message)
-				oe.PartialData = ListDataJSON(page)
+				oe.PartialData = ListDataJSON(Page{Items: merged, HasMore: anyBucketHasMore})
 				return Page{}, oe
 			}
 			return Page{}, oerr
@@ -149,19 +181,39 @@ func (s *Service) listAllBuckets(ctx context.Context, sess session.Session, opts
 			if oerr != nil {
 				return Page{}, oerr
 			}
-			page.Items = append(page.Items, d)
+			if seen[d.DraftID] {
+				continue
+			}
+			seen[d.DraftID] = true
+			merged = append(merged, d)
 		}
 		if data.HasMore() {
-			page.HasMore = true
+			anyBucketHasMore = true
 		}
 	}
-	if len(page.Items) > limit {
-		page.Items = page.Items[:limit]
+
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].UpdatedAt != merged[j].UpdatedAt {
+			return merged[i].UpdatedAt > merged[j].UpdatedAt
+		}
+		return merged[i].DraftID < merged[j].DraftID
+	})
+
+	truncated := len(merged) > limit
+	if truncated {
+		merged = merged[:limit]
+	}
+	page := Page{Items: merged, HasMore: anyBucketHasMore || truncated}
+	if page.HasMore {
+		page.Warnings = append(page.Warnings,
+			"跨桶首页预览不能续页；如需遍历请使用 --view-type 1|2|5 --cursor")
 	}
 	return page, nil
 }
 
-// listBucket 单桶拉取，支持游标续翻（原 view_type=7 语义的参数化版本）。
+// listBucket 单桶拉取，支持游标续翻。
+// 每次请求 size=min(pageSize, 剩余配额)，保证最后一页整页消费后再续游标，
+// 避免 --limit 小于页大小时跳过未展示的条目。
 func (s *Service) listBucket(ctx context.Context, sess session.Session, opts ListOptions) (Page, *output.Error) {
 	limit := opts.Limit
 	if limit <= 0 {
@@ -170,9 +222,13 @@ func (s *Service) listBucket(ctx context.Context, sess session.Session, opts Lis
 	page := Page{Items: []Draft{}}
 	cursor := opts.Cursor
 	for {
+		size := pageSize
+		if remain := limit - len(page.Items); remain < size {
+			size = remain
+		}
 		q := url.Values{}
 		q.Set("view_type", strconv.Itoa(opts.ViewType))
-		q.Set("size", strconv.Itoa(pageSize))
+		q.Set("size", strconv.Itoa(size))
 		q.Set("offset", cursor) // 首页传空串，与抓包证据一致
 
 		var data struct {
@@ -213,6 +269,8 @@ func (s *Service) listBucket(ctx context.Context, sess session.Session, opts Lis
 }
 
 // Get 拉取草稿详情。
+// 实测响应为双层结构：帖子本体在 data.draft.post（2026-09-15 实测 §4.1）；
+// 同时兼容扁平 data.draft 形态。
 func (s *Service) Get(ctx context.Context, sess session.Session, draftID string) (Detail, *output.Error) {
 	if draftID == "" {
 		return Detail{}, output.Err(output.CodeInputInvalid, "draft-id 不能为空")
@@ -221,7 +279,10 @@ func (s *Service) Get(ctx context.Context, sess session.Session, draftID string)
 	q.Set("draft_id", draftID)
 
 	var data struct {
-		Draft *draftRaw `json:"draft"`
+		Draft *struct {
+			Post *draftRaw `json:"post"`
+			draftRaw
+		} `json:"draft"`
 	}
 	if oerr := s.Client.DoJSON(ctx, "GET", "/post/api/draft/detail", q, nil, headers(sess), &data); oerr != nil {
 		return Detail{}, oerr
@@ -229,12 +290,16 @@ func (s *Service) Get(ctx context.Context, sess session.Session, draftID string)
 	if data.Draft == nil {
 		return Detail{}, output.Err(output.CodeRemoteRejected, "草稿详情响应缺少 draft 字段")
 	}
-	d0, oerr := data.Draft.toDraft()
+	raw := data.Draft.Post
+	if raw == nil {
+		raw = &data.Draft.draftRaw
+	}
+	d0, oerr := raw.toDraft()
 	if oerr != nil {
 		return Detail{}, oerr
 	}
 	d := Detail{Draft: d0}
-	if c := data.Draft.Content; c != nil {
+	if c := raw.Content; c != nil {
 		d.Describe = c.Describe
 		for _, img := range c.Imgs {
 			if img != "" {
@@ -243,20 +308,6 @@ func (s *Service) Get(ctx context.Context, sess session.Session, draftID string)
 		}
 	}
 	return d, nil
-}
-
-// KindFromViewType 把 view_type 映射为内容 kind；未知映射返回空串。
-// 仅用于 --kind 的客户端过滤，不代表服务端语义。
-func KindFromViewType(vt int) string {
-	switch vt {
-	case 1:
-		return "video"
-	case 2:
-		return "image"
-	case 5:
-		return "article"
-	}
-	return ""
 }
 
 // SaveOptions 是保存草稿的内容输入。

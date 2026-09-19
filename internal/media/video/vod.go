@@ -7,7 +7,7 @@
 //   - 直传 Authorization 为 Apply 下发的 StoreInfos[0].Auth（SpaceKey
 //     JWT）原样，不做 SigV4；
 //   - uploadid 是客户端生成的 UUID，无 init 请求；
-//   - 分片 CRC32 为 IEEE 多项式，十进制写在 x-upload-content-crc32 头；
+//   - 分片 CRC32 为 IEEE 多项式，x-upload-content-crc32 头与 finish 表统一为 8 位小写十六进制（2026-09-19 实测修正，此前十进制记录系误判）；
 //   - finish body 为 "part_number:crc32hex" 全表；
 //   - CallbackArgs / SessionKey / StoreInfos[0].Auth 一律原样透传。
 package video
@@ -80,7 +80,14 @@ func NewUploader(cfg Config) *Uploader {
 		cfg.MaxPartRetry = 3
 	}
 	if cfg.HTTP == nil {
-		cfg.HTTP = &http.Client{Timeout: 60 * time.Second}
+		cfg.HTTP = &http.Client{
+			Timeout: 60 * time.Second,
+			// 签名请求携带 x-security-token/SpaceKey，禁止跨 host 重定向，
+			// 防止临时凭据随重定向发往其它主机（ARCHITECTURE-V2 §6 信任边界）。
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 	if cfg.UploadHostSuffix == "" {
 		cfg.UploadHostSuffix = UploadHostSuffix
@@ -273,7 +280,7 @@ func (u *Uploader) transfer(ctx context.Context, host string, store storeInfo, u
 	endpoint := fmt.Sprintf("https://%s/upload/v1/%s?%s", host, store.StoreURI, transferQuery(uploadID, part, offset))
 	hm := http.Header{}
 	hm.Set("Authorization", store.Auth)
-	hm.Set("x-upload-content-crc32", strconv.FormatUint(uint64(sum), 10))
+	hm.Set("x-upload-content-crc32", fmt.Sprintf("%08x", sum))
 	hm.Set("x-tt-trace-id", traceID())
 
 	raw, oerr := vodRoundTrip(ctx, u.Config.HTTP, http.MethodPost, endpoint, body, hm)

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -116,8 +117,9 @@ func TestUploader_FullFlow(t *testing.T) {
 			transferCRCs = append(transferCRCs, r.Header.Get("x-upload-content-crc32"))
 			mu.Unlock()
 			wantCRC := crc32.ChecksumIEEE(body)
-			if got := r.Header.Get("x-upload-content-crc32"); got != fmt.Sprint(wantCRC) {
-				t.Errorf("part %s crc header = %s, want %d", q.Get("part_number"), got, wantCRC)
+			// 2026-09-19 实测修正：CRC 头与 finish 表统一为 8 位小写十六进制。
+			if got := r.Header.Get("x-upload-content-crc32"); got != fmt.Sprintf("%08x", wantCRC) {
+				t.Errorf("part %s crc header = %s, want %s", q.Get("part_number"), got, fmt.Sprintf("%08x", wantCRC))
 			}
 			fmt.Fprintf(w, `{"code":2000,"apiversion":"v1","message":"Success","data":{"uploadid":%q,"part_number":%q,"crc32":%q,"etag":"","meta":{"ObjectContentType":""},"mode":"normal","large_upload_id":""}}`,
 				q.Get("uploadid"), q.Get("part_number"), got(wantCRC))
@@ -245,9 +247,33 @@ func TestUploader_TransportFailureOnCommitIsUnknown(t *testing.T) {
 	}
 }
 
-func got(crc uint32) string { return fmt.Sprint(crc) }
+func got(crc uint32) string { return fmt.Sprintf("%08x", crc) }
 
 func hostOnly(srvURL string) string {
 	u, _ := url.Parse(srvURL)
 	return u.Host
+}
+
+func TestUploader_DefaultHTTPClientRefusesRedirect(t *testing.T) {
+	// 签名请求携带 x-security-token/SpaceKey：默认客户端必须不跟随重定向，
+	// 防止临时凭据随 302 发往其它主机（P2 审阅项）。
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		http.Redirect(w, r, "https://evil.example.com/steal?x=1", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	up := NewUploader(Config{})
+	resp, err := up.Config.HTTP.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("应原样返回 302 而非跟随重定向: %d", resp.StatusCode)
+	}
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Errorf("重定向目标被请求了 %d 次", n)
+	}
 }

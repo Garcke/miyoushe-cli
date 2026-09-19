@@ -21,63 +21,65 @@ func newDraftCmd(deps Deps) *cobra.Command {
 
 func newDraftListCmd(deps Deps) *cobra.Command {
 	var (
-		kind   string
-		cursor string
-		limit  int
+		viewType int
+		cursor   string
+		limit    int
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "查看草稿箱列表",
+		Short: "查看草稿箱列表（默认跨桶首页预览）",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if cmd.Flags().Changed("kind") {
+				return output.Err(output.CodeInputInvalid,
+					"--kind 已移除：草稿的 view_type 桶与内容类型不是一一对应（视频草稿与长文同为 view_type=5），"+
+						"逐条详情分类尚未实现；请改用 --view-type 1|2|5 按桶查看")
+			}
 			sess, warnings, oerr := loadSessionWithWarning(deps)
 			if oerr != nil {
 				return oerr
 			}
 			svc := draft.New(deps.ClientFor(protocol.HostBBS))
 			page, oerr := svc.List(cmd.Context(), sess, draft.ListOptions{
-				Cursor: cursor,
-				Limit:  limit,
+				ViewType: viewType,
+				Cursor:   cursor,
+				Limit:    limit,
 			})
 			if oerr != nil {
 				return oerr
 			}
-			items := page.Items
-			if kind != "" {
-				filtered := items[:0:0]
-				for _, it := range items {
-					if draft.KindFromViewType(it.ViewType) == kind {
-						filtered = append(filtered, it)
-					}
-				}
-				items = filtered
-			}
+			warnings = append(warnings, page.Warnings...)
 			if jsonMode(cmd) {
-				if items == nil {
-					items = []draft.Draft{}
+				if page.Items == nil {
+					page.Items = []draft.Draft{}
 				}
 				return output.Success(deps.Out,
-					output.ListData{Items: items, HasMore: page.HasMore},
+					output.ListData{Items: page.Items, HasMore: page.HasMore},
 					page.NextCursor, warnings)
 			}
 			printWarnings(deps, cmd, warnings)
-			if len(items) == 0 {
+			if len(page.Items) == 0 {
 				fmt.Fprintln(deps.Out, "草稿箱为空")
 				return nil
 			}
-			for _, it := range items {
+			for _, it := range page.Items {
 				fmt.Fprintf(deps.Out, "%s  vt=%d  %s  %s\n",
 					it.DraftID, it.ViewType, formatTime(it.UpdatedAt), truncate(it.Subject, 40))
 			}
-			if page.HasMore {
+			if page.HasMore && page.NextCursor != "" {
 				fmt.Fprintf(deps.Out, "下一页 cursor: %s\n", page.NextCursor)
+			} else if page.HasMore {
+				fmt.Fprintln(deps.Out, "还有更多草稿（跨桶预览不支持续页，请用 --view-type 1|2|5 --cursor 遍历）")
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&kind, "kind", "", "按内容类型过滤（image/article/video）")
-	cmd.Flags().StringVar(&cursor, "cursor", "", "服务端不透明游标")
+	cmd.Flags().IntVar(&viewType, "view-type", 0, "草稿类型桶：1/2/5（默认 0=跨桶首页预览）")
+	cmd.Flags().StringVar(&cursor, "cursor", "", "服务端不透明游标（仅单桶模式）")
 	cmd.Flags().IntVar(&limit, "limit", 20, "本次输出总数上限")
+	// --kind 保留占位以给出明确迁移提示（ARCHITECTURE-V2 §6：桶号≠内容类型）。
+	cmd.Flags().String("kind", "", "已移除（见 --help 输出与 --kind 报错说明）")
+	_ = cmd.Flags().MarkHidden("kind")
 	return cmd
 }
 

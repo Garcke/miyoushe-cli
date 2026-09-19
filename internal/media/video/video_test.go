@@ -3,11 +3,14 @@ package video
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"mihoyo_cli/internal/api"
 	"mihoyo_cli/internal/session"
@@ -213,5 +216,52 @@ func TestParseUploadToken_RejectsIncomplete(t *testing.T) {
 	}
 	if _, oerr := ParseUploadToken(`not-json`); oerr == nil {
 		t.Error("非 JSON 应报错")
+	}
+}
+
+func TestGetVideoID_CallbackPendingBoundedRetry(t *testing.T) {
+	// 16006 = Commit 后异步回调未完成的明确状态：有界退避重试；
+	// 其它 retcode 立即失败，不泛化等待。
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/video/api/getVideoID" {
+			t.Errorf("path = %s", r.URL.Path)
+		}
+		if atomic.AddInt32(&calls, 1) <= 2 {
+			fmt.Fprint(w, `{"retcode":16006,"message":"上传回调处理中"}`)
+			return
+		}
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"video_id":"2098311825916432384","video_info":{"duration":52208}}}`)
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	c.RequestTimeout = 2 * time.Second
+	svc := New(c)
+	vid, dur, oerr := svc.GetVideoID(context.Background(), videoSession(), "file_x", "md5_x")
+	if oerr != nil {
+		t.Fatalf("GetVideoID: %v", oerr)
+	}
+	if vid != "2098311825916432384" || dur != 52208 {
+		t.Errorf("vid=%s dur=%d", vid, dur)
+	}
+	if got := atomic.LoadInt32(&calls); got != 3 {
+		t.Errorf("16006 应重试至成功: calls=%d", got)
+	}
+}
+
+func TestGetVideoID_NonPendingRetcodeFailsFast(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		fmt.Fprint(w, `{"retcode":-300,"message":"参数错误"}`)
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	svc := New(c)
+	if _, _, oerr := svc.GetVideoID(context.Background(), videoSession(), "file_x", "md5_x"); oerr == nil {
+		t.Fatal("非 16006 错误应立即失败")
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("非 16006 不应重试: calls=%d", got)
 	}
 }

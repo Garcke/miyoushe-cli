@@ -175,12 +175,18 @@ func (s *Service) List(ctx context.Context, sess session.Session, opts ListOptio
 	page := Page{Items: []Summary{}}
 	cursor := opts.Cursor
 	for {
+		// 每次请求 size=min(pageSize, 剩余配额)：最后一页整页消费后再续游标，
+		// 避免 --limit 小于页大小时跳过未展示的条目。
+		size := pageSize
+		if remain := limit - len(page.Items); remain < size {
+			size = remain
+		}
 		q := url.Values{}
 		q.Set("uid", uid)
 		if opts.GIDs > 0 {
 			q.Set("gids", strconv.Itoa(opts.GIDs))
 		}
-		q.Set("size", strconv.Itoa(pageSize))
+		q.Set("size", strconv.Itoa(size))
 		if cursor != "" {
 			q.Set("last_id", cursor)
 		}
