@@ -1,12 +1,17 @@
 # 米游社 CLI 架构设计 v2：App Passport SToken 与社区内容管理
 
-状态：设计提案，尚非功能开放声明
+状态：设计基线（v2.1），写命令仍按门禁逐项开放
 
-日期：2026-09-19
-
-本版记录时间：2026-09-19 17:31（UTC+08:00，Asia/Shanghai）
+日期：2026-09-19（v2.0 17:31 / v2.1 同日修订）
 
 目标平台：Windows、macOS、Linux；Go 单二进制 + Cobra
+
+修订记录：
+
+| 版本 | 时间（UTC+08） | 变更 |
+|---|---|---|
+| v2.0 | 2026-09-19 17:31 | 初版：Passport SToken 默认登录、写操作状态机、1034 验证设计、媒体管线 |
+| v2.1 | 2026-09-19（晚） | 基线更新（871e059 已进入本地 main）；§11 三项待确认决策落定；§9.1 写结果状态与新增错误码定义；§4.2 能力常量定稿；§10 附经核实的代码修正清单（含 `vod.go` CRC 十进制缺陷定位） |
 
 ## 1. 决策摘要
 
@@ -14,13 +19,13 @@ CLI 以 `ma-cn-passport` App 扫码作为默认登录链路：用户在米游社
 
 取得 SToken 消除了先前的**凭据获取障碍**，但不自动批准所有写命令。每项能力仍需同时满足：目标场景的脱敏请求/响应 fixture、契约测试、适配器、错误/结果未知处理、用户显式操作和跨平台安全验收。本设计允许逐项打开草稿、图文、长文和视频工作流；编辑帖子、收藏变更等缺证据能力继续关闭。
 
-本文是新目标架构，不声称 `docs` 分支已实现下文全部命令。分支基线为 GitHub `main` 的 `8da9e31`；下文提及的 Passport、草稿写适配器和 VOD 代码现状来自**本地开发快照 `871e059`**，该提交未包含在本 `docs` 分支，也未因本次文档提交而上传。与本地保留的 `docs/architecture/` 下旧版总体架构、认证设计、社区功能设计和视频协议记录冲突时，以本文的决策为准；旧文是历史设计与证据轨迹，不应按其中过时的 HK4E 默认链路、视频首传阻塞结论或全局 `view_type` 映射开发。
+本文是新目标架构，不声称 `docs` 分支已实现下文全部命令。分支基线为 GitHub `main` 的 `8da9e31`；下文提及的 Passport、草稿写适配器和 VOD 代码现状来自**提交 `871e059`**（v2.1 更新：该提交现为本仓库本地 `main` 的 HEAD，包含 Passport 登录、写适配器与视频底座，尚未推送远端；`docs` 分支仍基于 `8da9e31`，不含该代码）。与本地保留的 `docs/architecture/` 下旧版总体架构、认证设计、社区功能设计和视频协议记录冲突时，以本文的决策为准；旧文是历史设计与证据轨迹，不应按其中过时的 HK4E 默认链路、视频首传阻塞结论或全局 `view_type` 映射开发。
 
 ## 2. 证据、现状与边界
 
 | 事项 | 已有证据或代码现状 | v2 解释 |
 |---|---|---|
-| App Passport 扫码 | 本项目本地 `docs/architecture/passport-qr-login.md` 及 CNB `mihoyo-api` 的 2026-09-15 实测记录；两处记录同源，不算两次独立验证 | Confirmed 响应直出 SToken v2；默认登录用此链路 |
+| App Passport 扫码 | CNB `mihoyo-api` 2026-09-15 实测记录（权威来源，见 §12）；本地 `passport-qr-login.md` 为同源工作区笔记，可能与本 checkout 不同步 | Confirmed 响应直出 SToken v2；默认登录用此链路 |
 | 账户只读 | 远端基线已有角色、帖子、草稿、收藏适配器；本地开发快照的 Passport SToken 曾通过实机只读验证 | 保留并补齐凭据失效、空列表、分页和权限错误契约 |
 | 草稿与文本发布 | CNB 记录了 `draft/save/delete`、`releasePost/v2`、`deletePost` 的成功与拒绝样本；本地开发快照存在尚未注册的写适配器 | 逐命令通过门禁后启用，不因适配器存在就注册 |
 | 视频首传 | CNB 2026-09-18/19 记录首次 VOD 上传、封面 OSS、草稿及视频发布复现；最新固定上游 commit 为 [`0f9fcac`](https://cnb.cool/NRD-Tech/Reverse_Project/-/commit/0f9fcacc6af1524b8a5ab570f789f34580cbea39) | 可进入实现与验收，不再判定“仅能秒传”；仍需本项目完成适配和测试 |
@@ -72,21 +77,34 @@ mys auth login
   → 私有临时文件 + 原子替换保存 SToken
 ```
 
-超时、取消、二维码失效、账号信息不一致或保存失败时保留旧凭据；不把 Game Token 改名为 SToken。`--mode=hk4e` 如保留，只作为显式选择的兼容/诊断路径，不自动切换，也不放宽其交换成功条件。不要在登录时顺带发布、上传或创建草稿。
+超时、取消、二维码失效、账号信息不一致或保存失败时保留旧凭据；不把 Game Token 改名为 SToken。`--mode=passport` 为默认并已在提交 `871e059` 实现（Passport 二维码失效码 `-3501`，处理与 HK4E 的 -104/-106 同策略：重建但不重置总时限）；`--mode=hk4e` 保留为显式选择的兼容/诊断路径，不自动切换，也不放宽其交换成功条件。不要在登录时顺带发布、上传或创建草稿。
 
-凭据保持远端基线的 `schema_version=1`，为 Passport 链路增加 `flow=ma_cn_passport_qr_login`，保存 UID/MID/SToken、设备上下文与保存时间（该扩展已存在于本地开发快照，未进入本分支）。`expires_at` 无可靠来源时为 `null`。`auth status` 完全离线；`auth verify` 用严格 SToken 只读端点在线检查，并将“Token 有效”“账号有绑定角色”“账号有某版区发布权限”区分，不因角色列表为空就断定凭据失效。不自动刷新/交换 Token；服务端判失效时提示重新扫码。
+凭据保持 `schema_version=1`，Passport 链路使用 `flow=ma_cn_passport_qr_login`（提交 `871e059` 已实现，与 v1 `hk4e_game_token_exchange` 双格式兼容），保存 UID/MID/SToken、设备上下文与保存时间。`expires_at` 无可靠来源时为 `null`。`auth status` 完全离线；`auth verify` 用严格 SToken 只读端点在线检查，并将“Token 有效”“账号有绑定角色”“账号有某版区发布权限”区分，不因角色列表为空就断定凭据失效。不自动刷新/交换 Token；服务端判失效时提示重新扫码。
 
 从存储加载后才在内存中派生 `stuid/stoken/mid` Cookie。凭据、派生 Cookie、二维码 URL/ticket、临时上传凭据、验证码数据和签名 URL 不进入 stdout、日志、fixture 或 journal。Unix 私有目录/文件权限与 Windows 当前用户 DACL 沿用现有存储契约；写入前必须通过权限检查，不能仅给警告后继续提交。
 
 ### 4.2 能力是交集，不是 Token 类型推断
 
-一次命令可执行，当且仅当：`已验证的会话能力 ∩ 端点证据/adapter_ready ∩ 当前用户显式操作 ∩ 本地安全条件` 都满足。至少区分 `read-account`、`draft-write`、`post-write`、`image-upload`、`video-upload` 和 `verification-interactive`。SToken 表示可尝试相关鉴权，不保证版区等级、账号权限、上传配额或发布审核通过。未准备好的写命令不注册；已注册命令遇到服务端权限变化则给出稳定错误，不自动改走另一端点。
+一次命令可执行，当且仅当：`已验证的会话能力 ∩ 端点证据/adapter_ready ∩ 当前用户显式操作 ∩ 本地安全条件` 都满足。SToken 表示可尝试相关鉴权，不保证版区等级、账号权限、上传配额或发布审核通过。未准备好的写命令不注册；已注册命令遇到服务端权限变化则给出稳定错误，不自动改走另一端点。
+
+能力常量定稿（v2.1，与代码 `internal/session` 对齐；新增项为纯增量，不重命名既有常量）：
+
+| 能力常量 | 覆盖命令域 | 门禁状态（871e059） |
+|---|---|---|
+| `read-account` | `auth verify`、`role list` | `available`（已有实机只读验证） |
+| `write-post` | `post create/delete`、`draft publish` | 未放行（适配器存在，命令未注册） |
+| `draft-write`（新增） | `draft save/delete` | 未放行（适配器存在，命令未注册） |
+| `image-upload` | 图片/封面上传（随写命令内部使用） | 未放行（`media/image` 适配器待建） |
+| `video-upload` | 视频秒传引用、首传、封面 | 未放行（底座 + 契约测试就绪） |
+| `verification-interactive`（新增） | 1034 人工验证流程 | 未实现 |
+
+`session.Require` 按此表放行；任何能力的判定依据（会话有效性、protocol profile、非破坏性 preflight）缺失时报告 `unknown`，不推断。
 
 ## 5. 命令面与开放顺序
 
 | 命令域 | 目标命令 | 开放依据 |
 |---|---|---|
-| 认证 | `auth login/status/verify/logout` | 远端基线已有 HK4E；本地开发快照已有 Passport；目标是以 Passport 为默认，status 离线 |
+| 认证 | `auth login/status/verify/logout` | 基线已有 HK4E；提交 `871e059` 已实现 `--mode=passport` 默认；目标是 status 离线 + Passport 为默认 |
 | 查看 | `role list`、`post list/show`、`draft list/show`、`favorite list` | 远端基线已有只读命令；目标需补分页与响应变体测试 |
 | 草稿 | `draft save/delete/publish` | 完整 body、覆盖语义、审核与失败 fixture；显式写确认 |
 | 帖子 | `post create/delete`、`post review show/undo` | 按内容类型分别就绪；删除/撤回先核对归属与状态 |
@@ -160,6 +178,8 @@ Journal 只保存操作 ID、账号脱敏标识、内容/媒体摘要、目标�
 
 断点续传仅在能验证上传会话、文件摘要与服务端分片状态一致时开放；checkpoint 不落任何临时密钥、签名 URL 或可重放挑战。不能安全恢复时丢弃本地上传进度并明确提示，不能擅自删除远端媒体。
 
+**首传结论的演进（v2.1 记录，避免再被旧结论误导）**：2026-09-18 的会话实测中，CLI 以自身身份走 `getToken → ApplyUploadInfo` 拿到的 SpaceKey 为占位值（JWT 内 `accessKey="fake_access_key"`），transfer 被拒（4007），重试后 `getToken` 升级为 16003，当时结论为“首传需在 App 内完成，CLI 仅走秒传”。2026-09-19 上游（CNB `0f9fcac`）记录了首次 VOD 上传复现成功，推翻该结论；结合新证据，当时的 4007 更可能是**请求形态缺陷**（如上述 CRC 十进制表示）而非平台策略。执行顺序：先修正 CRC hex 与 16006 处理，再以小视频重试 CLI 首传；若修正后仍稳定复现 4007/16003，则回退“秒传 + 同账号 video_id 引用”作为最终形态，保留失败证据并下调成熟度，不循环重试。`fake_access_key` 字样本身不作为凭据无效的判据，是否可传以 transfer/finish/Commit 的实际响应为准。
+
 ## 9. 错误、隐私与平台约束
 
 - 维持稳定的 `--json` 成功/失败 envelope 与退出码；新增 `INTERACTION_REQUIRED`、`PUBLISH_REVIEW_PENDING`、`PUBLISH_CHECK_REJECTED` 等状态应先定义机器语义和兼容策略，审核中属于已接受的结果而非传输失败。
@@ -167,6 +187,44 @@ Journal 只保存操作 ID、账号脱敏标识、内容/媒体摘要、目标�
 - stdout 只放最终结果；进度和可操作提示走 stderr。诊断日志不得输出原始请求/响应、正文、文件绝对路径、Token、二维码、签名 URL 或用户完整标识。
 - Windows 权限与原子替换需要真实 Windows 测试；macOS/Linux 的 0700/0600 和 symlink 检查分别测试。交叉编译通过不代表运行时安全行为通过。
 - CLI 仅操作当前用户显式授权的社区账号；尊重服务端限流、安全验证和审核，不提供规避风控或无人值守批量写入机制。
+
+### 9.1 写结果状态与新增错误码（v2.1 定义）
+
+写命令的成功 envelope 在 `data` 中携带状态机结果，脚本只依赖以下机器字段：
+
+```json
+{
+  "ok": true,
+  "data": {
+    "operation_id": "…",
+    "state": "published | under_review | rejected | unresolved | verification_required | saved",
+    "post_id": "…",
+    "post_review_id": "…",
+    "draft_id": "…"
+  },
+  "warnings": []
+}
+```
+
+状态语义（与 §7 状态机一一对应）：
+
+| state | 含义 | 退出码 |
+|---|---|---:|
+| `published` | 已发布，`post_id` 有效 | 0 |
+| `saved` | 草稿已保存，`draft_id` 有效 | 0 |
+| `under_review` | **已接受进入审核**，`post_review_id` 有效；这是成功结果而非错误，不设独立错误码 | 0 |
+| `rejected` | 业务拒绝（`release_check_result.can_release=false` 且两 ID 均空，或非零 retcode） | 4 |
+| `unresolved` | 结果未知/协议矛盾，需只读对账 | 5 |
+| `verification_required` | 收到已验证内容类型的 1034，等待用户人工验证 | 2 |
+
+新增失败错误码（纯增量，旧消费者按未知 code 处理即可）：
+
+| 错误码 | 退出码 | 触发 |
+|---|---:|---|
+| `INTERACTION_REQUIRED` | 2 | 交互载体不可用（端口关闭/非交互环境）或收到 1034 但 CLI 无法呈现验证页面；error 携带 `operation_id` 供恢复 |
+| `PUBLISH_CHECK_REJECTED` | 4 | `release_check_result.can_release=false` 且两 ID 均空——服务端**业务门槛拒绝**（如版区等级）；与传输层 `REMOTE_REJECTED` 同为退出码 4，脚本用 code 区分，message 保留服务端人话说明 |
+
+注意：`post_id` 为字符串 `"0"` 时视为空；`post_review_id` 优先于 `post_id` 判定审核态。`state=rejected` 与错误码 `PUBLISH_CHECK_REJECTED` 的边界：前者用于“部分流程已走完、journal 已建立”的写命令结果，后者用于 preflight/单发场景的直接失败。
 
 ## 10. 分阶段实施与验收
 
@@ -178,16 +236,26 @@ Journal 只保存操作 ID、账号脱敏标识、内容/媒体摘要、目标�
 | D：视频 | 首传+秒传、封面、视频专用发布、审核撤回 | CRC hex/SessionKey/16006/跨账号拒绝/挑战过期 fixture；真实账号的显式单次验收；Windows/macOS/Linux 编译和相关运行检查 |
 | E：后续能力 | 编辑、收藏写操作等 | 每个接口独立补证据与冲突/重复写入测试，不因前阶段通过而自动开放 |
 
-本地开发快照 `871e059` 已有 `auth`、只读命令、部分草稿/帖子写适配器与 VOD 底座，但 `session.Require` 仍只放行 `read-account`、Cobra 未注册写命令、图片/operation 与 1034 交互尚缺完整实现。该快照的草稿跨桶列表会在各桶首页拼接后截断，忽略 `--cursor`、未排序去重、`--kind` 在截断后过滤，故**不满足**本节的预览/分页契约；`KindFromViewType(5)` 固定解释为长文，也不能覆盖新视频证据。帖子发布结果解析及旧注释仍需按业务拒绝/审核状态与视频专用 body 重新核对。特别是该快照的 `internal/media/video/vod.go` 仍以**十进制**发送分片 CRC32，`getVideoID` 尚无针对 16006 的有界重试；该代码及相关旧测试/协议文档必须在阶段 D 前按最新实测修正。阶段完成的判断以代码、脱敏 fixture、自动测试和用户明确授权的实机验收为准，不以本文状态表替代。
+提交 `871e059`（现本地 `main` HEAD）已有 `auth`（Passport 默认 + HK4E 兼容）、只读命令、草稿/帖子写适配器与 VOD 底座，但 `session.Require` 仍只放行 `read-account`、Cobra 未注册写命令、`media/image`、`operation` 与 1034 交互尚缺完整实现。经 v2.1 逐项核实，该提交在阶段 D/A 前必须修正的点：
 
-## 11. 待确认决策
+1. `internal/media/video/vod.go:276`：分片 CRC32 以**十进制**写入 `x-upload-content-crc32`（`strconv.FormatUint(...,10)`），与最新实测的 **8 位小写十六进制**不符——这是首传 transfer 被拒（4007）的头号嫌疑，须先修正并按 hex 重跑契约测试；
+2. `getVideoID` 无针对 **16006**（Commit 后异步回调未完成）的有界退避重试；
+3. 草稿跨桶列表（`internal/draft`）在各桶首页拼接后截断，忽略 `--cursor`、未按 `updated_at` 降序稳定去重、`--kind` 在截断后过滤——**不满足** §6 的预览/分页契约，须按契约重写；
+4. `KindFromViewType(5)` 固定解释为长文，不能覆盖视频帖实测（`view_type=5` + `meta_content.vods`）；`--kind` 过滤须改为按详情分类或先行移除；
+5. 帖子发布结果解析须按 §7 的 `release_check_result` 四分支与 §9.1 状态字段重新核对（旧实现未区分“业务拒绝”与“协议矛盾”）。
 
-1. 第一批允许开放的写命令是“草稿保存/删除”还是“图文/长文发布”一起开放？默认建议先草稿，再发布。
-2. 审核中帖子是否在首个写版本提供 `review show/undo`？若不提供，必须至少展示审核 ID 与如何在 App 中处理。
-3. 是否需要在后续版本实现完整的跨桶复合游标？首版已决定仅提供跨桶首页预览和单桶续页。
+该提交中已验证**无需**修正的点：交换与 Passport 登录 host（`passport-api.mihoyo.com`，实捕确认）、`block_reply_img` number 契约、`ListMeta` number/string 容错、`getPostFull` 双层包装解析。阶段完成的判断以代码、脱敏 fixture、自动测试和用户明确授权的实机验收为准，不以本文状态表替代。
+
+## 11. 决策记录（v2.1 落定）
+
+v2.0 的三项待确认决策按下述结论执行；如需推翻，先在此处记录新证据与理由再改代码。
+
+1. **第一批开放的写命令：先草稿（save/delete），后发布。** 依据：`draft/save` 的精简可用 body 与 `block_reply_img` number 契约已由单变量对照实测锁定，失败面小（无审核态、无媒体强制），且草稿→发布为 `releasePost/v2` 提供可复用的内容编译与错误消化路径。图文/长文发布在草稿路径验收通过且发布 body fixture 齐备后同批开放，不拆散。
+2. **审核能力：首个写版本提供只读 `post review show`（含 review_id、audit 状态、App 内处理指引）；`review undo`（写）延后**，待撤回请求与“撤回后帖子状态”成对脱敏 fixture 齐备。任何审核中帖子的输出都必须携带 `post_review_id`，即使用户尚不能在 CLI 内撤回。
+3. **跨桶复合游标：推迟。** 首版维持“跨桶首页预览 + 单桶续页”（§6）。触发重新设计的条件：用户实测中预览+单桶遍历确实无法覆盖“全量导出/清理”场景，且能接受带版本号的复合游标复杂度；届时按 §6 预留的版本号、各桶 offset、排序边界与去重要素另行设计，不渐进塞进现有 `--cursor`。
 
 ## 12. 依据与维护
 
 - [CNB `mihoyo-api` 分支](https://cnb.cool/NRD-Tech/Reverse_Project/-/tree/mihoyo-api)，固定审阅提交 [`0f9fcacc6af1524b8a5ab570f789f34580cbea39`](https://cnb.cool/NRD-Tech/Reverse_Project/-/commit/0f9fcacc6af1524b8a5ab570f789f34580cbea39)（2026-09-19）；重点是 `mihoyo_bbs/docs/api/ma-cn-passport扫码登录_2026-09-15实测.md` 的 §4、§9、§11。该文按时间追加，旧段落的“视频首传失败/1034 未解”已被后续章节推翻。
-- 本地保留的 `docs/architecture/passport-qr-login.md`、`community-features.md`、`evidence-manifest.md`、`video-upload-protocol.md`。这些历史资料未随本文件纳入版本控制；其中旧协议记录的 CRC 十进制结论需修正。
+- 本地保留的 `docs/architecture/` 资料：`passport-qr-login.md`（注意：该文件仅存在于编写 v2 的开发工作区，本 checkout 的 `docs/` 可能不含它，Passport 链路证据以上游 `0f9fcac` 实测记录为权威来源）、`community-features.md`、`evidence-manifest.md`、`video-upload-protocol.md`、`api-reference.md`。这些历史资料未随本文件纳入版本控制；其中旧协议记录的 CRC 十进制结论已在 `video-upload-protocol.md` 加注修正（2026-09-19）。
 - 每次上游变化必须记录 commit、影响端点、实测级别、脱敏 fixture、契约测试与设计决策；不能只更新“接口能用”的文字。若 CNB 结论与本项目实机行为冲突，应降低能力成熟度、保留失败证据并停止该写命令发布。
