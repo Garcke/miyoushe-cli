@@ -1,10 +1,16 @@
-// Package draft 实现草稿只读能力：草稿箱列表与草稿详情。
-// 证据等级 V（query: view_type=7&offset=&size=20 / draft_id）。
-// draft save/publish/delete 等写命令按 fixture 门禁暂不注册。
+// Package draft 实现草稿能力：草稿箱列表、草稿详情与存/删写接口。
+// 只读证据等级 V（query: view_type&offset&size / draft_id）。
+// 写接口契约来自 2026-09-15 实测（见 docs/reference/cnb-mihoyo-api/snapshot/
+// docs/api/ma-cn-passport扫码登录_2026-09-15实测.md §4）：
+//   - view_type 参数按草稿类型分桶（1/2/5），"全部草稿"= 各桶并集；
+//   - draft/save 新建不带 draft_id，block_reply_img 必须为 int（boolean → -502）。
+//
+// 发布/删帖在 post 包；CLI 命令注册仍按门禁另行处理。
 package draft
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +22,9 @@ import (
 )
 
 const pageSize = 20
+
+// listViewTypes 是“全部草稿”需要遍历的分桶（实测 view_type 过滤草稿类型）。
+var listViewTypes = []int{1, 2, 5}
 
 // Draft 是草稿列表条目。
 type Draft struct {
@@ -34,9 +43,12 @@ type Detail struct {
 }
 
 // ListOptions 控制 draft list。
+// ViewType=0 表示合并 1/2/5 三桶（“全部草稿”，不支持游标续翻）；
+// 显式指定（如 7）时按单桶语义支持游标。
 type ListOptions struct {
-	Cursor string
-	Limit  int
+	Cursor   string
+	Limit    int
+	ViewType int
 }
 
 // Page 是一次草稿列表读取的完整结果。
@@ -93,8 +105,64 @@ func (raw *draftRaw) toDraft() (Draft, *output.Error) {
 	}, nil
 }
 
-// List 拉取草稿箱列表（view_type=7）。
+// List 拉取草稿箱。ViewType=0 时合并 1/2/5 三桶各首页（不支持游标）；
+// 指定 ViewType 时保持单桶游标语义。
 func (s *Service) List(ctx context.Context, sess session.Session, opts ListOptions) (Page, *output.Error) {
+	if opts.ViewType == 0 {
+		return s.listAllBuckets(ctx, sess, opts)
+	}
+	return s.listBucket(ctx, sess, opts)
+}
+
+// listAllBuckets 合并各草稿类型桶的首页。跨桶深分页未实现：
+// 每桶取一页（size=limit），合并后截断到 limit；HasMore 如实上报。
+func (s *Service) listAllBuckets(ctx context.Context, sess session.Session, opts ListOptions) (Page, *output.Error) {
+	limit := opts.Limit
+	if limit <= 0 {
+		limit = pageSize
+	}
+	page := Page{Items: []Draft{}}
+	for _, vt := range listViewTypes {
+		q := url.Values{}
+		q.Set("view_type", strconv.Itoa(vt))
+		q.Set("size", strconv.Itoa(limit))
+		q.Set("offset", "")
+		var data struct {
+			api.ListMeta
+			List []listEntry `json:"list"`
+		}
+		if oerr := s.Client.DoJSON(ctx, "GET", "/post/api/draft/list", q, nil, headers(sess), &data); oerr != nil {
+			if len(page.Items) > 0 {
+				oe := output.Err(output.CodeRemoteRejected,
+					"草稿列表（view_type=%d）读取失败: %s", vt, oerr.Message)
+				oe.PartialData = ListDataJSON(page)
+				return Page{}, oe
+			}
+			return Page{}, oerr
+		}
+		for _, entry := range data.List {
+			raw := entry.Draft
+			if raw == nil {
+				raw = &entry.draftRaw
+			}
+			d, oerr := raw.toDraft()
+			if oerr != nil {
+				return Page{}, oerr
+			}
+			page.Items = append(page.Items, d)
+		}
+		if data.HasMore() {
+			page.HasMore = true
+		}
+	}
+	if len(page.Items) > limit {
+		page.Items = page.Items[:limit]
+	}
+	return page, nil
+}
+
+// listBucket 单桶拉取，支持游标续翻（原 view_type=7 语义的参数化版本）。
+func (s *Service) listBucket(ctx context.Context, sess session.Session, opts ListOptions) (Page, *output.Error) {
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = pageSize
@@ -103,7 +171,7 @@ func (s *Service) List(ctx context.Context, sess session.Session, opts ListOptio
 	cursor := opts.Cursor
 	for {
 		q := url.Values{}
-		q.Set("view_type", "7")
+		q.Set("view_type", strconv.Itoa(opts.ViewType))
 		q.Set("size", strconv.Itoa(pageSize))
 		q.Set("offset", cursor) // 首页传空串，与抓包证据一致
 
@@ -189,4 +257,94 @@ func KindFromViewType(vt int) string {
 		return "article"
 	}
 	return ""
+}
+
+// SaveOptions 是保存草稿的内容输入。
+// StructuredContent 传 Quill delta 序列化后的 JSON 字符串（与 content HTML 同内容）。
+// BlockReplyImg 契约：int 0/1；服务端对 boolean 直接 -502（实测 §4.1），0 值省略发送。
+type SaveOptions struct {
+	Subject           string
+	ContentHTML       string
+	StructuredContent string
+	ForumID           string
+	ViewType          int
+	Cover             string
+	GIDs              int
+	BlockReplyImg     int
+}
+
+// Save 保存草稿（新建）。返回服务端签发的 draft_id。
+// 实测契约：新建不带 draft_id；is_profit/is_original/topic_ids 可选（全缺也 rc=0）。
+func (s *Service) Save(ctx context.Context, sess session.Session, opts SaveOptions) (string, *output.Error) {
+	if opts.Subject == "" {
+		return "", output.Err(output.CodeInputInvalid, "草稿标题不能为空")
+	}
+	if opts.ForumID == "" {
+		return "", output.Err(output.CodeInputInvalid, "forum-id 不能为空")
+	}
+	if opts.ViewType == 0 {
+		return "", output.Err(output.CodeInputInvalid, "view-type 必须显式指定（1/2/5）")
+	}
+	if opts.GIDs == 0 {
+		return "", output.Err(output.CodeInputInvalid, "gids 不能为空")
+	}
+
+	body := map[string]any{
+		"is_profit":          false,
+		"forum_id":           opts.ForumID,
+		"view_type":          opts.ViewType,
+		"content":            opts.ContentHTML,
+		"is_original":        0,
+		"topic_ids":          []any{},
+		"structured_content": opts.StructuredContent,
+		"subject":            opts.Subject,
+		"cover":              opts.Cover,
+		"gids":               opts.GIDs,
+	}
+	if opts.BlockReplyImg != 0 {
+		body["block_reply_img"] = opts.BlockReplyImg // int 0/1；绝不能是 bool
+	}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "", output.Err(output.CodeInternal, "构造草稿保存请求失败: %v", err)
+	}
+
+	h := headers(sess)
+	var data struct {
+		DraftID api.FlexString `json:"draft_id"`
+	}
+	if oerr := s.Client.DoJSON(ctx, "POST", "/post/api/draft/save", nil, b, h, &data); oerr != nil {
+		return "", oerr
+	}
+	id := data.DraftID.String()
+	if id == "" {
+		return "", output.Err(output.CodeRemoteRejected, "保存草稿响应缺少 draft_id")
+	}
+	return id, nil
+}
+
+// Delete 删除草稿（幂等由服务端决定；已删草稿重复删除返回远端错误原样上报）。
+func (s *Service) Delete(ctx context.Context, sess session.Session, draftID string) *output.Error {
+	if draftID == "" {
+		return output.Err(output.CodeInputInvalid, "draft-id 不能为空")
+	}
+	b, err := json.Marshal(struct {
+		DraftID string `json:"draft_id"`
+	}{DraftID: draftID})
+	if err != nil {
+		return output.Err(output.CodeInternal, "构造草稿删除请求失败: %v", err)
+	}
+	return s.Client.DoJSON(ctx, "POST", "/post/api/draft/delete", nil, b, headers(sess), &struct{}{})
+}
+
+// ListDataJSON 供部分失败时把已消费结果放入 error.partial_data。
+func ListDataJSON(p Page) any {
+	items := p.Items
+	if items == nil {
+		items = []Draft{}
+	}
+	return map[string]any{
+		"items":    items,
+		"has_more": p.HasMore,
+	}
 }

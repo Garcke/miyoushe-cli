@@ -32,7 +32,7 @@ func TestDraftList_QueryAndParse(t *testing.T) {
 	}))
 	defer srv.Close()
 	c, _ := api.New(srv.URL)
-	page, oerr := New(c).List(context.Background(), testSess(), ListOptions{})
+	page, oerr := New(c).List(context.Background(), testSess(), ListOptions{ViewType: 7})
 	if oerr != nil {
 		t.Fatalf("List: %v", oerr)
 	}
@@ -48,6 +48,41 @@ func TestDraftList_QueryAndParse(t *testing.T) {
 	// draft_id 数值型也能解析为字符串。
 	if page.Items[1].DraftID != "2" {
 		t.Errorf("items[1].DraftID = %q", page.Items[1].DraftID)
+	}
+}
+
+func TestDraftList_MergedBuckets(t *testing.T) {
+	// 实测（2026-09-15）：view_type 按草稿类型分桶，"全部草稿"= 1/2/5 三桶并集。
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		seen = append(seen, q.Get("view_type"))
+		switch q.Get("view_type") {
+		case "1":
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+				{"draft_id":"b1","subject":"桶1","view_type":1}],"is_last":true}}`)
+		case "2":
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+				{"draft_id":"b2","subject":"桶2","view_type":2},
+				{"draft_id":"b3","subject":"桶2b","view_type":2}],"is_last":true}}`)
+		default:
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[],"is_last":true}}`)
+		}
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	page, oerr := New(c).List(context.Background(), testSess(), ListOptions{})
+	if oerr != nil {
+		t.Fatalf("List: %v", oerr)
+	}
+	if len(seen) != 3 || seen[0] != "1" || seen[1] != "2" || seen[2] != "5" {
+		t.Errorf("应按 1/2/5 三桶查询: %v", seen)
+	}
+	if len(page.Items) != 3 || page.Items[0].DraftID != "b1" || page.Items[2].DraftID != "b3" {
+		t.Errorf("items = %+v", page.Items)
+	}
+	if page.HasMore {
+		t.Error("各桶 is_last=true 时不应 HasMore")
 	}
 }
 

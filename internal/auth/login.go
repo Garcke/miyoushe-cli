@@ -59,8 +59,11 @@ type Service struct {
 	Store    *store.Store
 	FPClient *api.Client // public-data-api（getFp）
 	QRClient *api.Client // hk4e-sdk（二维码 fetch/query）
-	ExClient *api.Client // api-takumi（getTokenByGameToken）
-	Now      func() time.Time
+	ExClient *api.Client // passport-api.mihoyo.com（ma-cn-session/app/*，真机实捕 host）
+	// PassportClient 是 ma-cn-passport 扫码登录基座（createQRLogin /
+	// queryQRLoginStatus，同一 HostPassportAPI）。
+	PassportClient *api.Client
+	Now            func() time.Time
 }
 
 // scanCredentials 是扫码确认后提取的游戏侧凭据（仅用于当前交换）。

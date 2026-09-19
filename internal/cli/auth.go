@@ -40,6 +40,7 @@ var progressText = map[string]string{
 
 func newAuthLoginCmd(deps Deps) *cobra.Command {
 	var timeout time.Duration
+	var mode string
 	cmd := &cobra.Command{
 		Use:   "login",
 		Short: "扫码登录并保存 SToken 凭据",
@@ -48,16 +49,20 @@ func newAuthLoginCmd(deps Deps) *cobra.Command {
 			if timeout <= 0 {
 				return output.Err(output.CodeInputInvalid, "--timeout 必须为正时长")
 			}
+			if mode != "passport" && mode != "hk4e" {
+				return output.Err(output.CodeInputInvalid, "--mode 只支持 passport 或 hk4e")
+			}
 			quiet := jsonMode(cmd)
 			render := deps.Render(quiet)
 			defer render.Cleanup() // 正常退出、错误、取消都清理临时二维码文件
 
 			svc := &auth.Service{
-				Store:    deps.Store,
-				FPClient: deps.ClientFor(protocol.HostPublicData),
-				QRClient: deps.ClientFor(protocol.HostHK4E),
-				ExClient: deps.ClientFor(protocol.HostTakumi),
-				Now:      deps.Now,
+				Store:          deps.Store,
+				FPClient:       deps.ClientFor(protocol.HostPublicData),
+				QRClient:       deps.ClientFor(protocol.HostHK4E),
+				ExClient:       deps.ClientFor(protocol.HostPassportAPI),
+				PassportClient: deps.ClientFor(protocol.HostPassportAPI),
+				Now:            deps.Now,
 			}
 			cfg := auth.DefaultConfig()
 			cfg.Timeout = timeout
@@ -70,7 +75,13 @@ func newAuthLoginCmd(deps Deps) *cobra.Command {
 				}
 			}
 
-			creds, oerr := svc.Login(cmd.Context(), cfg, render, progress)
+			// passport：ma-cn-passport 扫码直出 SToken（默认，实测链路）；
+			// hk4e：游戏码 + Game Token 交换（认证设计原链路）。
+			loginFunc := svc.LoginPassport
+			if mode == "hk4e" {
+				loginFunc = svc.Login
+			}
+			creds, oerr := loginFunc(cmd.Context(), cfg, render, progress)
 			if oerr != nil {
 				return oerr
 			}
@@ -97,6 +108,7 @@ func newAuthLoginCmd(deps Deps) *cobra.Command {
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", 300*time.Second, "登录总等待上限（如 5m）")
+	cmd.Flags().StringVar(&mode, "mode", "passport", "登录链路：passport（ma-cn-passport 扫码直出）或 hk4e（游戏码+交换）")
 	return cmd
 }
 
