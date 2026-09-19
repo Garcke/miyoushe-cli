@@ -2,6 +2,8 @@
 
 米游社社区 CLI（Go + Cobra）。当前包含阶段 0 + 阶段 A 的实现：扫码登录与凭据安全存储、会话验证，以及角色、帖子、草稿、收藏的只读查看。
 
+新的目标架构：[App Passport SToken 与社区内容管理设计 v2](ARCHITECTURE-V2.md)（2026-09-19 更新）。该文档是设计提案，不表示此分支已实现其中的 Passport 或写命令。
+
 ## 实现状态
 
 已实现：
@@ -50,4 +52,4 @@ mys favorite list [--role game_biz:game_uid:region] [--full] [--json]
 - 视频上传必须先完成火山 VOD 临时凭据协议验证。
 - Token、Cookie、上传签名、临时密钥，以及带有效会话/账号上下文的实时 DS 不得进入仓库、日志或测试 fixture。
 
-架构与协议设计文档不在本仓库中（`docs/` 已加入 .gitignore，仅本地保留）。
+v2 目标架构见 [ARCHITECTURE-V2.md](ARCHITECTURE-V2.md)；其余历史架构与协议设计文档不在本分支中（`docs/` 已加入 .gitignore，仅本地保留）。
