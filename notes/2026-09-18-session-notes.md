@@ -53,12 +53,13 @@
   `meta_content = {"describe":[…],"vods":[{"id":"<video_id>"}]}` + 封面 OSS URL +
   `topic_ids`；`gids` 为**字符串**；`block_reply_img` int；服务端会把它合并进
   `structured_content`（内联 vod 块自动补封面）；无需先存草稿。
-- **首传分支（平台策略限制）**：CLI 以自身身份走 `getToken → ApplyUploadInfo`
-  拿到的 SpaceKey 凭据为占位值（JWT 内 `accessKey="fake_access_key"`），
-  transfer 被拒（4007，服务端 client/server hash 实为同值）；连续尝试后
-  `getToken` 升级为 `16003`。结论：**视频首传需在 App 内完成**，CLI 走秒传
-  分支引用其 `video_id`；`video_id` 只能被**同账号**帖子引用（跨账号引用报
-  `rc=2000 已存在相同的视频`）。
+- **首传分支**：曾因 transfer 返回 `4007 Mismatch CRC32` 误判为"平台策略拦截"。
+  2026-09-18 定案（根因修复，全链路 rc=0）：**`x-upload-content-crc32` 必须发
+  8 位 hex**（服务端按 hex 比对，十进制恒 4007）；**SessionKey 在
+  `Result.Data.UploadAddress.SessionKey`**（取空导致 Commit invalid json param）。
+  `fake_access_key` 是 SpaceKey JWT 的正常字段（鉴权靠 JWT 签名，不影响上传）——
+  "占位凭据/平台拦截"结论作废；`getVideoID` 的 16006 是回调异步延迟（~10s 重试即通）。
+  另：`video_id` 只能被**同账号**帖子引用（跨账号引用报 `rc=2000 已存在相同的视频`）。
 - 封面链路（可完全由 CLI 完成）：`getUploadParams` → OSS multipart 直传
   （表单必须含 `x-oss-content-type`，policy 校验）→ 回调注册 → `upload-bbs` URL 可达。
 - 实现：`internal/media/video`（秒传/权限/配额/getToken/Apply→transfer→finish→Commit
