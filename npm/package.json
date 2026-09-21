@@ -1,0 +1,41 @@
+{
+  "name": "@garcke/miyoushe-cli",
+  "version": "0.0.0-development",
+  "description": "Cross-platform installer for the miyoushe-cli native binary",
+  "type": "module",
+  "bin": {
+    "miyoushe-cli": "scripts/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "scripts/",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Garcke/miyoushe-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Garcke/miyoushe-cli/issues"
+  },
+  "homepage": "https://github.com/Garcke/miyoushe-cli#readme",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

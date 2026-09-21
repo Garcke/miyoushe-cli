@@ -26,6 +26,17 @@
 
 需要 Go 1.24 或更高版本。
 
+首次 GitHub Release 和 npm 包发布完成后，将支持：
+
+```bash
+npx @garcke/miyoushe-cli@latest install
+```
+
+安装器需要 Node.js 18 或更高版本。它会校验 GitHub Release 中的 SHA-256，
+并将 `mys` 安装到当前用户目录；如果目录尚未加入 `PATH`，会给出提示。
+
+在首个版本正式发布前，请使用源码构建方式：
+
 ```bash
 git clone https://github.com/Garcke/miyoushe-cli.git
 cd miyoushe-cli
@@ -59,6 +70,10 @@ mys forum posts <forum-id> --gids <gids> [--json]
 ```
 
 使用 `mys <command> --help` 查看完整参数。
+
+```bash
+mys --version
+```
 
 ## 扫码登录行为
 

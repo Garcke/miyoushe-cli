@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: miyoushe-cli
+
+builds:
+  - id: mys
+    main: ./cmd/mys
+    binary: mys
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - windows
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - >-
+        -s -w
+        -X mihoyo_cli/internal/buildinfo.Version={{ .Version }}
+        -X mihoyo_cli/internal/buildinfo.Commit={{ .Commit }}
+        -X mihoyo_cli/internal/buildinfo.Date={{ .CommitDate }}
+
+archives:
+  - id: release
+    ids:
+      - mys
+    # The raw binary is consumed by the npm installer. Archives are provided
+    # for users who prefer manual installation.
+    formats:
+      - binary
+      - tar.gz
+    name_template: "mys_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats:
+          - binary
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+
+release:
+  draft: false
+  prerelease: auto

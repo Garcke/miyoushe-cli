@@ -18,6 +18,7 @@ import (
 
 	"mihoyo_cli/internal/api"
 	"mihoyo_cli/internal/auth"
+	"mihoyo_cli/internal/buildinfo"
 	"mihoyo_cli/internal/output"
 	"mihoyo_cli/internal/qr"
 	"mihoyo_cli/internal/session"
@@ -67,8 +68,9 @@ func defaultClientFor(host string) *api.Client {
 // 避免运行到一半才发现“尚未实现”。
 func NewRoot(deps Deps) *cobra.Command {
 	root := &cobra.Command{
-		Use:   "mys",
-		Short: "米游社社区命令行工具",
+		Use:     "mys",
+		Short:   "米游社社区命令行工具",
+		Version: buildinfo.String(),
 		Long: "mys 是米游社社区 CLI。扫码登录、角色与内容查看已可用；" +
 			"内容发布类命令按协议证据门禁（fixture + 契约测试）分阶段开放。",
 		SilenceUsage:  true,
@@ -77,6 +79,7 @@ func NewRoot(deps Deps) *cobra.Command {
 			DisableDefaultCmd: true,
 		},
 	}
+	root.SetVersionTemplate("{{printf \"%s version %s\\n\" .Name .Version}}")
 	root.PersistentFlags().Bool("json", false, "输出稳定 JSON envelope（失败写 stderr）")
 	root.AddCommand(
 		newAuthCmd(deps),

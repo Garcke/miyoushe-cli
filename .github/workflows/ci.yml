@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Test Go packages
+        run: go test -count=1 ./...
+      - name: Vet Go packages
+        run: go vet ./...
+      - name: Test npm installer
+        working-directory: npm
+        run: npm ci && npm test
+      - name: Verify npm package contents
+        working-directory: npm
+        run: npm pack --dry-run
