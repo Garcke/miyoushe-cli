@@ -97,8 +97,8 @@ func TestFavoriteList_QueryAndCursor(t *testing.T) {
 	if oerr != nil {
 		t.Fatalf("List: %v", oerr)
 	}
-	// 首页参数：aid/offset(空)/size/game_uid/game_region。
-	if gotQuery != "aid=100024680&game_region=cn_gf01&game_uid=770000001&offset=&size=20" {
+	// 首页参数：aid/offset(空)/size/game_uid/game_region；size=剩余配额（本例 limit=3）。
+	if gotQuery != "aid=100024680&game_region=cn_gf01&game_uid=770000001&offset=&size=3" {
 		t.Errorf("首页 query = %s", gotQuery)
 	}
 	if len(page.Items) != 3 || page.Items[2].PostID != "f3" {
@@ -142,5 +142,42 @@ func TestFillFull_FailsOnError(t *testing.T) {
 	items := []post.Summary{{PostID: "a"}, {PostID: "b"}}
 	if _, oerr := FillFull(context.Background(), testSess(), items, post.New(c), 2); oerr == nil {
 		t.Fatal("任一条失败应整体失败")
+	}
+}
+
+func TestFavoriteList_LimitContinuity(t *testing.T) {
+	// --limit 3：首页 size=3，游标紧跟第 3 条之后。
+	var gotSize, gotOffset string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		gotSize, gotOffset = q.Get("size"), q.Get("offset")
+		if q.Get("offset") == "" {
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+				{"post":{"post_id":"f1","subject":"s1","view_type":2}},
+				{"post":{"post_id":"f2","subject":"s2","view_type":2}},
+				{"post":{"post_id":"f3","subject":"s3","view_type":2}}
+			],"is_last":false,"next_offset":"off3"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+			{"post":{"post_id":"f4","subject":"s4","view_type":2}}],"is_last":true}}`)
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	page, oerr := New(c).List(context.Background(), testSess(), testRoles[0], ListOptions{Limit: 3})
+	if oerr != nil {
+		t.Fatalf("List: %v", oerr)
+	}
+	if gotSize != "3" {
+		t.Errorf("首页 size = %s, want 3", gotSize)
+	}
+	if gotOffset != "" {
+		t.Errorf("首页 offset 应为空: %s", gotOffset)
+	}
+	if len(page.Items) != 3 || page.Items[2].PostID != "f3" {
+		t.Fatalf("items = %+v", page.Items)
+	}
+	if page.NextCursor != "off3" || !page.HasMore {
+		t.Errorf("page = %+v", page)
 	}
 }

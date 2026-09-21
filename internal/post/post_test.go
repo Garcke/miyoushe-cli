@@ -181,3 +181,97 @@ func TestPostShow_MissingPostField(t *testing.T) {
 		t.Fatalf("缺 post 字段应失败: %v", oerr)
 	}
 }
+
+func TestPostList_LimitContinuity(t *testing.T) {
+	// --limit 5：首页请求 size 必须=5，且 5 条全部消费后游标指向第 5 条之后，
+	// 不允许取整页 20 条后跳过中间条目。
+	var gotSize, gotOffset string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		gotSize, gotOffset = q.Get("size"), q.Get("last_id")
+		if q.Get("last_id") == "" {
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+				{"post":{"post_id":"a1","subject":"s1","view_type":2}},
+				{"post":{"post_id":"a2","subject":"s2","view_type":2}},
+				{"post":{"post_id":"a3","subject":"s3","view_type":2}},
+				{"post":{"post_id":"a4","subject":"s4","view_type":2}},
+				{"post":{"post_id":"a5","subject":"s5","view_type":2}}],
+				"is_last":false,"last_id":"off5"}}`)
+			return
+		}
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+			{"post":{"post_id":"a6","subject":"s6","view_type":2}}],"is_last":true}}`)
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	page, oerr := New(c).List(context.Background(), sessionSessionForTest(), ListOptions{Limit: 5})
+	if oerr != nil {
+		t.Fatalf("List: %v", oerr)
+	}
+	if gotSize != "5" {
+		t.Errorf("首页请求 size = %s, want 5（剩余配额）", gotSize)
+	}
+	if gotOffset != "" {
+		t.Errorf("首页 last_id 应为空: %s", gotOffset)
+	}
+	if len(page.Items) != 5 || page.Items[4].PostID != "a5" {
+		t.Fatalf("items = %+v", page.Items)
+	}
+	if page.NextCursor != "off5" || !page.HasMore {
+		t.Errorf("page = %+v", page)
+	}
+}
+
+// ---------- R1：字符串正文的包装识别（不得把普通 JSON 丢成空正文） ----------
+
+func TestPostShow_ContentClassification(t *testing.T) {
+	cases := []struct {
+		name     string
+		content  string // 直接写入响应 JSON 的 content 值
+		describe string
+		images   int
+	}{
+		{"普通JSON对象文本", `"{\"foo\":1}"`, `{"foo":1}`, 0},
+		{"空对象文本", `"{}"`, `{}`, 0},
+		{"残缺JSON文本", `"{\"foo\":1"`, `{"foo":1`, 0},
+		{"HTML文本", `"<p>正文</p>"`, `<p>正文</p>`, 0},
+		{"普通文本", `"纯文字"`, `纯文字`, 0},
+		{"数组文本", `"[1,2]"`, `[1,2]`, 0},
+		{"已知包装", `"{\"describe\":\"正文\",\"imgs\":[]}"`, "正文", 0},
+		{"合法空包装", `"{\"describe\":\"\",\"imgs\":[]}"`, "", 0},
+		{"仅图片包装", `"{\"imgs\":[\"https://upload-bbs.miyoushe.com/a.png\"]}"`, "", 1},
+		{"已知键类型不合法", `"{\"describe\":42}"`, `{"describe":42}`, 0},
+		{"未知键+已知键混合", `"{\"foo\":1,\"describe\":\"正文\"}"`, "正文", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"retcode":0,"message":"OK","data":{"post":{"post_id":"p1","subject":"s","view_type":2,"content":` + tc.content + `},"vod_list":[]}}`
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, body)
+			}))
+			defer srv.Close()
+			c, _ := api.New(srv.URL)
+			d, oerr := New(c).Get(context.Background(), sessionSessionForTest(), "p1")
+			if oerr != nil {
+				t.Fatalf("Get: %v", oerr)
+			}
+			if d.Describe != tc.describe || len(d.Images) != tc.images {
+				t.Errorf("describe=%q images=%d, want %q/%d", d.Describe, len(d.Images), tc.describe, tc.images)
+			}
+		})
+	}
+}
+
+func TestPostShow_ObjectContentTypeError(t *testing.T) {
+	// 直接对象形态的字段类型错误按响应结构错误处理，不字符串化。
+	body := `{"retcode":0,"message":"OK","data":{"post":{"post_id":"p1","subject":"s","content":{"describe":42}},"vod_list":[]}}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, body)
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	_, oerr := New(c).Get(context.Background(), sessionSessionForTest(), "p1")
+	if oerr == nil || oerr.Code != output.CodeRemoteRejected {
+		t.Fatalf("对象字段类型错误应报响应结构错误: %v", oerr)
+	}
+}

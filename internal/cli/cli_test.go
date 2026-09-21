@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"mihoyo_cli/internal/auth"
 	"mihoyo_cli/internal/output"
 	"mihoyo_cli/internal/store"
+	"net/url"
+	"sync"
 )
 
 // testEnv 组装命令层测试环境：单一 httptest 服务器伪装全部上游。
@@ -25,10 +28,40 @@ type testEnv struct {
 	out  *bytes.Buffer
 	errb *bytes.Buffer
 	srv  *httptest.Server
+	// log 是本环境私有的请求记录器（R4）：不跨 testEnv 共享。
+	log *requestLog
+	// discussionBody 覆盖讨论区响应体；为空用默认完整样本。
+	discussionBody string
+}
+
+// requestLog 用私有互斥锁保护请求记录：处理协程写入、测试读取快照与
+// 清空都经过同一组方法；快照返回副本，不共享底层 slice（R4）。
+type requestLog struct {
+	mu      sync.Mutex
+	queries []string
+}
+
+func (l *requestLog) add(q string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.queries = append(l.queries, q)
+}
+
+func (l *requestLog) snapshot() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.queries...)
+}
+
+func (l *requestLog) reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.queries = nil
 }
 
 func newTestEnv(t *testing.T) *testEnv {
 	t.Helper()
+	env := &testEnv{out: &bytes.Buffer{}, errb: &bytes.Buffer{}, log: &requestLog{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/binding/api/getUserGameRolesByStoken", func(w http.ResponseWriter, r *http.Request) {
 		assertSessionHeaders(t, r)
@@ -56,14 +89,34 @@ func newTestEnv(t *testing.T) *testEnv {
 			{"post":{"post_id":"f1","subject":"收藏帖","view_type":2}}
 		],"is_last":true}}`)
 	})
+	mux.HandleFunc("/forum/api/getDiscussionByGame", func(w http.ResponseWriter, r *http.Request) {
+		if q := r.URL.Query().Get("gids"); q != "2" {
+			t.Errorf("gids = %s", q)
+		}
+		if env.discussionBody != "" {
+			fmt.Fprint(w, env.discussionBody)
+			return
+		}
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"discussion":{
+			"discussion_id":2,"game_id":2,"subject":"旅行者讨论区",
+			"forums":[{"id":26,"game_id":2,"name":"酒馆","des":"冒险传说"}]}}}`)
+	})
+	mux.HandleFunc("/painter/api/searchPosts", func(w http.ResponseWriter, r *http.Request) {
+		env.log.add(r.URL.RawQuery)
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[],"is_last":true}}`)
+	})
+	mux.HandleFunc("/apihub/api/v2/search", func(w http.ResponseWriter, r *http.Request) {
+		env.log.add(r.URL.RawQuery)
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"topics":[],"users":[],"wikis":[],"posts":[]}}`)
+	})
 	srv := httptest.NewServer(mux)
+	env.srv = srv
 
 	st := &store.Store{Dir: filepath.Join(t.TempDir(), "mys")}
 	// 预置一份合成凭据（社区命令前置条件）。
 	if oerr := st.Save(store.NewCredentials("100024680", "mid_syn", "v2_syn_stoken", "device-syn", "fp0123456789a", funcTime())); oerr != nil {
 		t.Fatal(oerr)
 	}
-	env := &testEnv{out: &bytes.Buffer{}, errb: &bytes.Buffer{}, srv: srv}
 	deps := Deps{
 		Store: st,
 		ClientFor: func(host string) *api.Client {
@@ -280,5 +333,195 @@ func TestLoginTimeoutFlagValidated(t *testing.T) {
 	}
 	if res.Error.Exit != output.ExitInput {
 		t.Errorf("exit = %d", res.Error.Exit)
+	}
+}
+
+// ---------- V3 §3 / R4：搜索参数契约（每用例独立 env + 精确 query 断言） ----------
+
+// queryGIDs 解析记录到的 query，精确取出 gids 与 size（避免 Contains 把
+// gids=20 误判成 gids=2）。
+func parseQuery(t *testing.T, raw string) url.Values {
+	t.Helper()
+	v, err := url.ParseQuery(raw)
+	if err != nil {
+		t.Fatalf("query 非法 %q: %v", raw, err)
+	}
+	return v
+}
+
+func TestSearchPosts_GIDsContract(t *testing.T) {
+	t.Run("默认gids2", func(t *testing.T) {
+		env := newTestEnv(t)
+		if res := env.run(t, "search", "posts", "原神", "--json"); !res.OK {
+			t.Fatalf("默认 gids: %+v", res.Error)
+		}
+		q := env.log.snapshot()
+		if len(q) != 1 {
+			t.Fatalf("请求数 = %d, want 1: %v", len(q), q)
+		}
+		if got := parseQuery(t, q[0]).Get("gids"); got != "2" {
+			t.Errorf("gids = %q, want 2", got)
+		}
+	})
+
+	t.Run("指定gids8", func(t *testing.T) {
+		env := newTestEnv(t)
+		if res := env.run(t, "search", "posts", "原神", "--gids", "8", "--json"); !res.OK {
+			t.Fatalf("指定 gids: %+v", res.Error)
+		}
+		q := env.log.snapshot()
+		if len(q) != 1 || parseQuery(t, q[0]).Get("gids") != "8" {
+			t.Errorf("gids 参数不符: %v", q)
+		}
+	})
+
+	t.Run("显式空值拒绝", func(t *testing.T) {
+		env := newTestEnv(t)
+		res := env.run(t, "search", "posts", "原神", "--gids", "", "--json")
+		if res.OK || res.Error.Code != output.CodeInputInvalid {
+			t.Fatalf("--gids 空值应 INPUT_INVALID: %+v", res.Error)
+		}
+		if q := env.log.snapshot(); len(q) != 0 {
+			t.Errorf("--gids 空值不得发请求: %v", q)
+		}
+	})
+
+	for _, bad := range []string{"abc", "0", "-2"} {
+		t.Run("非法gids_"+bad, func(t *testing.T) {
+			env := newTestEnv(t)
+			res := env.run(t, "search", "posts", "原神", "--gids", bad, "--json")
+			if res.OK || res.Error.Code != output.CodeInputInvalid {
+				t.Fatalf("--gids %s 应 INPUT_INVALID: %+v", bad, res.Error)
+			}
+			if q := env.log.snapshot(); len(q) != 0 {
+				t.Errorf("--gids %s 不得发请求", bad)
+			}
+		})
+	}
+}
+
+func TestSearchAll_GIDsContract(t *testing.T) {
+	t.Run("默认gids2", func(t *testing.T) {
+		env := newTestEnv(t)
+		if res := env.run(t, "search", "all", "原神", "--json"); !res.OK {
+			t.Fatalf("默认: %+v", res.Error)
+		}
+		q := env.log.snapshot()
+		if len(q) != 1 || parseQuery(t, q[0]).Get("gids") != "2" {
+			t.Errorf("gids 参数不符: %v", q)
+		}
+	})
+
+	t.Run("显式空值拒绝", func(t *testing.T) {
+		env := newTestEnv(t)
+		res := env.run(t, "search", "all", "原神", "--gids", "", "--json")
+		if res.OK || res.Error.Code != output.CodeInputInvalid {
+			t.Fatalf("--gids 空值应 INPUT_INVALID: %+v", res.Error)
+		}
+		if q := env.log.snapshot(); len(q) != 0 {
+			t.Errorf("不得发请求: %v", q)
+		}
+	})
+}
+
+func TestSearchTopics_NoGIDs(t *testing.T) {
+	env := newTestEnv(t)
+	// topics 不应接受 --gids（该接口 gids 无过滤效果，命令层直接不提供）。
+	env.root.SetArgs([]string{"search", "topics", "原神", "--gids", "2"})
+	env.root.SetOut(env.out)
+	if err := env.root.Execute(); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Errorf("search topics 应拒绝 --gids: %v", err)
+	}
+}
+
+func TestSearchLimit_RulePerCase(t *testing.T) {
+	for _, bad := range []string{"1", "2", "0", "-1"} {
+		t.Run("limit_"+bad, func(t *testing.T) {
+			env := newTestEnv(t)
+			res := env.run(t, "search", "posts", "原神", "--limit", bad, "--json")
+			if res.OK || res.Error.Code != output.CodeInputInvalid {
+				t.Fatalf("--limit %s 应 INPUT_INVALID: %+v", bad, res.Error)
+			}
+			if q := env.log.snapshot(); len(q) != 0 {
+				t.Errorf("--limit %s 不得发请求", bad)
+			}
+		})
+	}
+
+	t.Run("limit3通过", func(t *testing.T) {
+		env := newTestEnv(t)
+		if res := env.run(t, "search", "posts", "原神", "--limit", "3", "--json"); !res.OK {
+			t.Fatalf("--limit 3: %+v", res.Error)
+		}
+		q := env.log.snapshot()
+		if len(q) != 1 || parseQuery(t, q[0]).Get("size") != "3" {
+			t.Errorf("size 参数不符: %v", q)
+		}
+	})
+}
+
+// ---------- V3 §5.1：forum discussion 匿名只读命令 ----------
+
+func TestForumDiscussion_Anonymous(t *testing.T) {
+	env := newTestEnv(t)
+	// 删除凭据：匿名接口不应要求会话。
+	if _, oerr := env.deps.Store.Delete(); oerr != nil {
+		t.Fatal(oerr)
+	}
+	res := env.run(t, "forum", "discussion", "2", "--json")
+	if !res.OK {
+		t.Fatalf("匿名调用应成功: %+v", res.Error)
+	}
+	data, _ := json.Marshal(res.Data)
+	var d struct {
+		DiscussionID string `json:"discussion_id"`
+		Subject      string `json:"subject"`
+		Forums       []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+			Des  string `json:"des"`
+		} `json:"forums"`
+	}
+	if err := json.Unmarshal(data, &d); err != nil {
+		t.Fatalf("data: %v", err)
+	}
+	if d.DiscussionID != "2" || d.Subject != "旅行者讨论区" || len(d.Forums) != 1 || d.Forums[0].Name != "酒馆" {
+		t.Errorf("discussion = %+v", d)
+	}
+}
+
+func TestForumDiscussion_HumanShowsNotProvided(t *testing.T) {
+	// R3：样本必须真的缺少名称/描述，才能证明缺失字段的占位输出。
+	env := newTestEnv(t)
+	env.discussionBody = `{"retcode":0,"message":"OK","data":{"discussion":{
+		"discussion_id":2,"forums":[{"id":26}]}}}`
+	env.out.Reset()
+	env.root.SetArgs([]string{"forum", "discussion", "2"})
+	if err := env.root.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	out := env.out.String()
+	if !strings.Contains(out, "26") {
+		t.Fatalf("输出缺少分区 ID: %s", out)
+	}
+	if !strings.Contains(out, "未提供") {
+		t.Errorf("缺失名称/描述应显示未提供: %s", out)
+	}
+	if !strings.Contains(out, "描述: 未提供") {
+		t.Errorf("描述行应始终输出并显示未提供: %s", out)
+	}
+}
+
+func TestForumDiscussion_HumanCompleteFields(t *testing.T) {
+	// 字段齐全时的普通输出验证（与缺失场景分开）。
+	env := newTestEnv(t)
+	env.out.Reset()
+	env.root.SetArgs([]string{"forum", "discussion", "2"})
+	if err := env.root.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	out := env.out.String()
+	if !strings.Contains(out, "旅行者讨论区") || !strings.Contains(out, "酒馆") || !strings.Contains(out, "冒险传说") {
+		t.Errorf("人类输出缺少字段: %s", out)
 	}
 }

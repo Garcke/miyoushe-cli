@@ -1,53 +1,104 @@
 # miyoushe-cli
 
-米游社社区 CLI（Go + Cobra）。当前包含阶段 0 + 阶段 A 的实现：扫码登录与凭据安全存储、会话验证，以及角色、帖子、草稿、收藏的只读查看。
+<p align="center">
+  <img src="assets/miyoushe-cli-banner.png" alt="miyoushe-cli blue 3D-ASCII banner">
+</p>
 
-## 实现状态
+米游社社区命令行工具，使用 Go 与 Cobra 构建，支持 Windows、macOS 和 Linux。
 
-已实现：
+当前公开版本以只读操作为主，提供扫码登录、会话验证、绑定角色、帖子、草稿、收藏、搜索和社区分区浏览。
 
-- `mys auth login / status / verify / logout`：HK4E 扫码状态机、Game Token 严格交换 SToken、跨平台凭据安全存储（Unix 0700/0600；Windows 以当前用户 SID 限制 DACL）、原子替换写入。
-- `mys role list`、`mys post list/show`、`mys draft list/show`、`mys favorite list`：只读适配器 + 稳定 JSON envelope + 游标分页。
-- 协议层：BBS DS1 与 passport DS、公共 x-rpc 头组合、host 白名单、1 MiB 响应上限、拒绝重定向与脱敏错误。
-- 测试：协议/存储/登录状态机/各只读适配器/命令层均以 `httptest` + 合成 Token 覆盖；无任何真实凭据。
+> 本项目是非官方社区工具，与米哈游、HoYoverse 无隶属或授权关系。上游接口可能随时调整，请勿将真实 Token、Cookie 或其他凭据提交到仓库或日志。
 
-未实现（按协议证据门禁保持不注册，不提供运行到一半才发现未实现的写命令）：
+## 可用功能
 
-- `post create/edit/delete`、`draft save/publish/delete`、`favorite add/remove`、`operation` 与视频链路——待对应脱敏 fixture 与契约测试齐备后分阶段开放。
-- Game Token → SToken 交换的线上可行性仍是阶段 0 门禁：上游证据记录该交换曾被服务端拒绝（-3005/-5300），实现如实报告失败并保留旧凭据，不设计只读回退。
+- Passport 扫码登录并保存 SToken v2；同时保留 HK4E 兼容登录模式。
+- 查看登录状态并在线验证当前会话。
+- 查看绑定角色、帖子详情与列表、草稿和收藏。
+- 搜索帖子、话题和综合内容。
+- 浏览游戏社区、讨论区和分区帖子流。
+- 使用稳定的 JSON envelope 和固定退出码进行脚本集成。
+- 使用原子写入保存凭据；Unix 使用 0700/0600 权限，Windows 使用受保护 DACL。
 
-平台状态（区分编译与实机验证）：
+发帖、删除帖子、保存或发布草稿、图片及视频上传等写操作尚未加入公开命令树。
 
-| 平台 | 交叉编译 | 安全存储实机验证 |
-|---|---|---|
-| Windows amd64/arm64 | ✅ | ✅（开发平台） |
-| macOS amd64/arm64 | ✅ | ❌ 待实机验证 |
-| Linux amd64/arm64 | ✅ | ❌ 待实机验证 |
+## 构建
+
+需要 Go 1.24 或更高版本。
+
+```bash
+git clone https://github.com/Garcke/miyoushe-cli.git
+cd miyoushe-cli
+go build -trimpath -o mys ./cmd/mys
+```
+
+Windows 可以将输出文件名改为 `mys.exe`。
 
 ## 快速开始
 
 ```bash
-go build -o mys ./cmd/mys
+mys auth login                         # Passport 扫码登录
+mys auth login --mode hk4e             # HK4E 兼容登录
+mys auth status                        # 离线查看本地登录状态
+mys auth verify                        # 在线验证会话
+mys auth logout                        # 删除本地凭据
 
-mys auth login            # 扫码登录（默认总等待 300s，--timeout 可调）
-mys auth status           # 离线查看本地登录状态
-mys auth verify           # 在线验证会话与能力（只读）
-mys auth logout           # 删除本地凭据（幂等）
 mys role list [--game-biz hk4e_cn] [--json]
 mys post list [--uid ...] [--cursor ...] [--limit ...] [--json]
 mys post show <post-id> [--json]
-mys draft list [--kind image|article|video] [--json]
+mys draft list [--view-type 1|2|5] [--cursor ...] [--json]
 mys favorite list [--role game_biz:game_uid:region] [--full] [--json]
+
+mys search posts <关键词> [--gids 2] [--order ...] [--json]
+mys search topics <关键词> [--json]
+mys search all <关键词> [--gids 2] [--json]
+
+mys forum games [--json]
+mys forum discussion <gids> [--json]
+mys forum posts <forum-id> --gids <gids> [--json]
 ```
 
-所有命令支持 `--json` 输出稳定 envelope；机器判断使用 `error.code`，退出码固定为 0/1/2/3/4/5。
+使用 `mys <command> --help` 查看完整参数。
 
-## 当前约束
+## 扫码登录行为
 
-- 首版只支持一个默认社区账号。
-- Game Token 必须成功交换为 SToken；不设计只读回退。
-- 未取得完整脱敏请求样本与契约测试的写接口不会开放。
-- 视频上传必须先完成火山 VOD 临时凭据协议验证。
-- Token、Cookie、上传签名、临时密钥，以及带有效会话/账号上下文的实时 DS 不得进入仓库、日志或测试 fixture。
+- 默认登录模式为 Passport，默认总等待时间为 300 秒，可通过 `--timeout` 调整。
+- 达到总等待时限时返回 `LOGIN_TIMEOUT`，退出码为 3。
+- 用户按 Ctrl+C 或进程收到终止信号时返回 `CANCELLED`，退出码为 1。
+- HK4E 模式失败时不会自动回退到 Passport 模式。
+- JSON 模式下，临时二维码 PNG 路径写入 stderr，stdout 只输出最终 JSON envelope；登录结束后临时文件会被清理。
 
-架构与协议设计文档不在本仓库中（`docs/` 已加入 .gitignore，仅本地保留）。
+## JSON 与退出码
+
+所有命令都支持 `--json`。自动化脚本应优先判断 `error.code`，不要匹配人类可读错误文案。
+
+| 退出码 | 含义 |
+| ---: | --- |
+| 0 | 成功 |
+| 1 | 本地错误或用户取消 |
+| 2 | 输入错误或功能未开放 |
+| 3 | 登录、凭据或协议认证错误 |
+| 4 | 服务端明确拒绝 |
+| 5 | 服务端结果未知或操作状态未决 |
+
+## 当前限制
+
+- 只支持一个默认社区账号。
+- `search posts` 和 `search all` 必须指定有效 `gids`；未指定时默认使用 `2`（原神）。
+- `search topics` 是跨社区搜索，不支持按游戏过滤。
+- 写操作尚未开放。
+- macOS 和 Linux 的凭据权限仍需要更多真实环境验证。
+
+## 开发与测试
+
+```bash
+go test -count=1 ./...
+go vet ./...
+go build ./...
+```
+
+测试只使用本地模拟服务和合成凭据，不应加入任何真实账号数据。
+
+## License
+
+[MIT](LICENSE)

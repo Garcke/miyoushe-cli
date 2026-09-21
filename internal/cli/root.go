@@ -5,10 +5,13 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -81,6 +84,8 @@ func NewRoot(deps Deps) *cobra.Command {
 		newPostCmd(deps),
 		newDraftCmd(deps),
 		newFavoriteCmd(deps),
+		newSearchCmd(deps),
+		newForumCmd(deps),
 	)
 	return root
 }
@@ -94,6 +99,9 @@ func Execute() int {
 		return output.ExitInternal
 	}
 	root := NewRoot(deps)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	root.SetContext(ctx)
 	if err := root.Execute(); err != nil {
 		var oe *output.Error
 		if !errors.As(err, &oe) {

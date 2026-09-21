@@ -38,18 +38,20 @@ const (
 
 // ListMeta 是列表接口分页元数据的容错解析：
 // 收藏夹/草稿箱返回 is_last + next_offset；动态列表使用 last_id。
+// 2026-09-15 实测：空列表时 next_offset 为 JSON number（0），故用 FlexString。
 type ListMeta struct {
-	IsLast     *bool  `json:"is_last"`
-	NextOffset string `json:"next_offset"`
-	LastID     string `json:"last_id"`
+	IsLast     *bool      `json:"is_last"`
+	NextOffset FlexString `json:"next_offset"`
+	LastID     FlexString `json:"last_id"`
 }
 
 // Cursor 返回下一个不透明游标；CLI 不把它转换成页码。
+// next_offset 为 0（数字或字符串）视同空：偏移 0 只会重复首页，不应续翻。
 func (m ListMeta) Cursor() string {
-	if m.NextOffset != "" {
-		return m.NextOffset
+	if next := m.NextOffset.String(); next != "" && next != "0" {
+		return next
 	}
-	return m.LastID
+	return m.LastID.String()
 }
 
 // HasMore 判断是否还有下一页。is_last 存在时以它为准。

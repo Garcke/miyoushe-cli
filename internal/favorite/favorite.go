@@ -59,10 +59,15 @@ func (s *Service) List(ctx context.Context, sess session.Session, r role.Role, o
 	page := Page{Items: []post.Summary{}}
 	cursor := opts.Cursor
 	for {
+		// size=min(pageSize, 剩余)：整页消费后再续游标，--limit 不跳数据。
+		size := pageSize
+		if remain := limit - len(page.Items); remain < size {
+			size = remain
+		}
 		q := url.Values{}
 		q.Set("aid", sess.UID)
 		q.Set("offset", cursor) // 首页传空串，与快照一致
-		q.Set("size", strconv.Itoa(pageSize))
+		q.Set("size", strconv.Itoa(size))
 		q.Set("game_uid", r.GameUID)
 		q.Set("game_region", r.Region)
 

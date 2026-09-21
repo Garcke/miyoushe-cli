@@ -44,7 +44,8 @@ func DefaultConfig() Config {
 	}
 }
 
-// ProgressFunc 接收进度阶段标记；CLI 层负责人类可读展示或 JSON 模式静默。
+// ProgressFunc 接收进度阶段标记；CLI 层负责人类可读展示，JSON 模式仅将
+// 扫码所需的临时 PNG 路径写入 stderr，保持 stdout 为单一 JSON 文档。
 type ProgressFunc func(stage string)
 
 // Renderer 由 CLI 层注入的二维码渲染（终端 + 临时 PNG）。
@@ -59,8 +60,11 @@ type Service struct {
 	Store    *store.Store
 	FPClient *api.Client // public-data-api（getFp）
 	QRClient *api.Client // hk4e-sdk（二维码 fetch/query）
-	ExClient *api.Client // api-takumi（getTokenByGameToken）
-	Now      func() time.Time
+	ExClient *api.Client // passport-api.mihoyo.com（ma-cn-session/app/*，真机实捕 host）
+	// PassportClient 是 ma-cn-passport 扫码登录基座（createQRLogin /
+	// queryQRLoginStatus，同一 HostPassportAPI）。
+	PassportClient *api.Client
+	Now            func() time.Time
 }
 
 // scanCredentials 是扫码确认后提取的游戏侧凭据（仅用于当前交换）。
@@ -98,8 +102,10 @@ func (s *Service) Login(ctx context.Context, cfg Config, render Renderer, progre
 	}
 
 	deadline := s.now().Add(cfg.Timeout)
+	flowCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
 
-	device, oerr := s.loadDevice(ctx)
+	device, oerr := s.loadDevice(flowCtx)
 	if oerr != nil {
 		return nil, oerr
 	}
@@ -107,11 +113,14 @@ func (s *Service) Login(ctx context.Context, cfg Config, render Renderer, progre
 
 	var scan *scanCredentials
 	for {
+		if err := flowCtx.Err(); err != nil {
+			return nil, loginFlowError(err, cfg.Timeout)
+		}
 		if !s.now().Before(deadline) {
 			return nil, output.Err(output.CodeLoginTimeout,
-				"登录等待超过总时限 %s，已取消", cfg.Timeout)
+				"登录等待超过总时限 %s", cfg.Timeout)
 		}
-		qrURL, ticket, oerr := s.fetchQR(ctx, device)
+		qrURL, ticket, oerr := s.fetchQR(flowCtx, device)
 		if oerr != nil {
 			return nil, oerr
 		}
@@ -120,7 +129,7 @@ func (s *Service) Login(ctx context.Context, cfg Config, render Renderer, progre
 		}
 		progress("qr_ready")
 
-		res, oerr, expired := s.pollConfirm(ctx, cfg, deadline, ticket, device, progress)
+		res, oerr, expired := s.pollConfirm(flowCtx, cfg, deadline, ticket, device, progress)
 		if expired {
 			progress("qr_expired")
 			continue
@@ -133,7 +142,7 @@ func (s *Service) Login(ctx context.Context, cfg Config, render Renderer, progre
 	}
 
 	progress("exchanging")
-	creds, oerr := s.exchange(ctx, device, scan)
+	creds, oerr := s.exchange(flowCtx, device, scan)
 	if oerr != nil {
 		return nil, oerr
 	}
@@ -251,10 +260,13 @@ func (s *Service) pollConfirm(ctx context.Context, cfg Config, deadline time.Tim
 	fails := 0
 	lastStat := ""
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, loginFlowError(err, cfg.Timeout), false
+		}
 		now := s.now()
 		rem := deadline.Sub(now)
 		if rem <= 0 {
-			return nil, output.Err(output.CodeLoginTimeout, "登录等待超过总时限，已取消"), false
+			return nil, output.Err(output.CodeLoginTimeout, "登录等待超过总时限 %s", cfg.Timeout), false
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, minDuration(cfg.RequestTimeout, rem))
@@ -262,8 +274,8 @@ func (s *Service) pollConfirm(ctx context.Context, cfg Config, deadline time.Tim
 		cancel()
 
 		if oerr != nil {
-			if ctx.Err() != nil {
-				return nil, output.Err(output.CodeCancelled, "已取消登录"), false
+			if err := ctx.Err(); err != nil {
+				return nil, loginFlowError(err, cfg.Timeout), false
 			}
 			// 可识别的二维码过期响应触发重建，不计入连续失败。
 			if oerr.Retcode == -104 || oerr.Retcode == -106 {
@@ -275,7 +287,7 @@ func (s *Service) pollConfirm(ctx context.Context, cfg Config, deadline time.Tim
 					"查询扫码状态连续失败 %d 次: %s", fails, oerr.Message), false
 			}
 			if !sleepCtx(ctx, minDuration(cfg.PollInterval, rem)) {
-				return nil, output.Err(output.CodeCancelled, "已取消登录"), false
+				return nil, loginFlowError(ctx.Err(), cfg.Timeout), false
 			}
 			continue
 		}
@@ -304,7 +316,7 @@ func (s *Service) pollConfirm(ctx context.Context, cfg Config, deadline time.Tim
 		}
 
 		if !sleepCtx(ctx, minDuration(cfg.PollInterval, rem)) {
-			return nil, output.Err(output.CodeCancelled, "已取消登录"), false
+			return nil, loginFlowError(ctx.Err(), cfg.Timeout), false
 		}
 	}
 }
