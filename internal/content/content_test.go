@@ -1,6 +1,7 @@
 package content
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -137,20 +138,21 @@ func TestParse_NonUTF8AndBOM(t *testing.T) {
 }
 
 func TestParse_AbsolutePathAndArticleCover(t *testing.T) {
-	specJSON := `{
+	cover := filepath.Join(t.TempDir(), "cover.jpg")
+	specJSON := fmt.Sprintf(`{
 		"schema_version": 1,
 		"kind": "article",
 		"gids": 9,
 		"forum_id": 47,
 		"subject": "长文",
-		"cover": "C:/imgs/cover.jpg",
+		"cover": %q,
 		"blocks": [{"type": "text", "text": "正文"}]
-	}`
+	}`, cover)
 	spec, oerr := Parse([]byte(specJSON), "/base")
 	if oerr != nil {
 		t.Fatalf("Parse: %v", oerr)
 	}
-	if spec.Cover == nil || spec.Cover.Absolute != `C:\imgs\cover.jpg` {
+	if spec.Cover == nil || spec.Cover.Absolute != filepath.Clean(cover) {
 		t.Errorf("cover = %+v", spec.Cover)
 	}
 }

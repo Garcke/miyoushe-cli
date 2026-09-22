@@ -80,7 +80,7 @@ func newPassportService(t *testing.T, st *passportServerState) (*Service, *store
 	t.Helper()
 	srv := newPassportServer(t, st)
 	t.Cleanup(srv.Close)
-	dir := t.TempDir()
+	dir := privateTestDir(t)
 	sto := &store.Store{Dir: dir}
 	client, err := api.New(srv.URL)
 	if err != nil {
@@ -271,7 +271,7 @@ func TestPassportLogin_PollRetriesThenSucceeds(t *testing.T) {
 	st := &passportServerState{queryResps: []string{passportConfirmedRaw()}}
 	srv := newPassportServer(t, st)
 	t.Cleanup(srv.Close)
-	sto := &store.Store{Dir: t.TempDir()}
+	sto := &store.Store{Dir: privateTestDir(t)}
 	c, _ := api.New(srv.URL)
 	c.HTTP = &http.Client{Transport: &passportFlakyTransport{inner: http.DefaultTransport, fails: 2}}
 	svc := &Service{Store: sto, FPClient: c, PassportClient: c, Now: time.Now}
@@ -289,7 +289,7 @@ func TestPassportLogin_PollConsecutiveFailsAborts(t *testing.T) {
 	st := &passportServerState{queryResps: []string{passportStatusResp("Created")}}
 	srv := newPassportServer(t, st)
 	t.Cleanup(srv.Close)
-	sto := &store.Store{Dir: t.TempDir()}
+	sto := &store.Store{Dir: privateTestDir(t)}
 	c, _ := api.New(srv.URL)
 	c.HTTP = &http.Client{Transport: &passportFlakyTransport{inner: http.DefaultTransport, fails: 99}}
 	svc := &Service{Store: sto, FPClient: c, PassportClient: c, Now: time.Now}
@@ -304,7 +304,7 @@ func TestPassportLogin_PollConsecutiveFailsAborts(t *testing.T) {
 }
 
 func TestPassportLogin_RequiresPassportClient(t *testing.T) {
-	svc := &Service{Store: &store.Store{Dir: t.TempDir()}, Now: time.Now}
+	svc := &Service{Store: &store.Store{Dir: privateTestDir(t)}, Now: time.Now}
 	_, oerr := svc.LoginPassport(context.Background(), fastCfg(), &fakeRenderer{}, nil)
 	if oerr == nil || !strings.Contains(oerr.Message, "PassportClient") {
 		t.Fatalf("未配置 PassportClient 应报错: %+v", oerr)

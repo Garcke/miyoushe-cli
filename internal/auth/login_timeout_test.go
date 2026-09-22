@@ -37,7 +37,7 @@ func TestLogin_TotalTimeoutIncludesQRSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.HTTP.Transport = slowSetupTransport{}
-	storeDir := t.TempDir()
+	storeDir := privateTestDir(t)
 	st := &store.Store{Dir: storeDir}
 	if err := st.Save(store.NewCredentials(synUID, synMID, synSToken, synDeviceID, synFP, time.Now())); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestLoginPassport_TotalTimeoutIncludesQRSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.HTTP.Transport = slowSetupTransport{}
-	st := &store.Store{Dir: t.TempDir()}
+	st := &store.Store{Dir: privateTestDir(t)}
 	if err := st.Save(store.NewCredentialsFlow(store.FlowV2, synUID, synMID, synSToken, synDeviceID, synFP, time.Now())); err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func blockedPollClient(t *testing.T) *api.Client {
 func TestLogin_TimeoutDuringPollRequest(t *testing.T) {
 	// 轮询请求在途时总时限到期：Timeout < RequestTimeout，请求被总时限打断。
 	client := blockedPollClient(t)
-	svc := &Service{Store: &store.Store{Dir: t.TempDir()}, QRClient: client, ExClient: client, FPClient: client}
+	svc := &Service{Store: &store.Store{Dir: privateTestDir(t)}, QRClient: client, ExClient: client, FPClient: client}
 	start := time.Now()
 	_, oerr := svc.Login(context.Background(),
 		Config{Timeout: 120 * time.Millisecond, PollInterval: time.Millisecond, RequestTimeout: 5 * time.Second, MaxPollFails: 3},
@@ -165,7 +165,7 @@ func TestLogin_TimeoutDuringPollRequest(t *testing.T) {
 
 func TestLoginPassport_TimeoutDuringPollRequest(t *testing.T) {
 	client := blockedPollClient(t)
-	svc := &Service{Store: &store.Store{Dir: t.TempDir()}, FPClient: client, PassportClient: client}
+	svc := &Service{Store: &store.Store{Dir: privateTestDir(t)}, FPClient: client, PassportClient: client}
 	_, oerr := svc.LoginPassport(context.Background(),
 		Config{Timeout: 120 * time.Millisecond, PollInterval: time.Millisecond, RequestTimeout: 5 * time.Second, MaxPollFails: 3},
 		&fakeRenderer{}, nil)
