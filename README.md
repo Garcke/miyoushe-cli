@@ -22,11 +22,9 @@
 
 发帖、删除帖子、保存或发布草稿、图片及视频上传等写操作尚未加入公开命令树。
 
-## 构建
+## 安装
 
-需要 Go 1.24 或更高版本。
-
-首次 GitHub Release 和 npm 包发布完成后，将支持：
+推荐使用 npm 安装器：
 
 ```bash
 npx @garcke/miyoushe-cli@latest install
@@ -34,8 +32,12 @@ npx @garcke/miyoushe-cli@latest install
 
 安装器需要 Node.js 18 或更高版本。它会校验 GitHub Release 中的 SHA-256，
 并将 `mys` 安装到当前用户目录；如果目录尚未加入 `PATH`，会给出提示。
+默认目录为 Windows 的 `%LOCALAPPDATA%\miyoushe-cli\bin`，以及 macOS/Linux
+的 `~/.local/bin`。可使用 `--install-dir <路径>` 指定其他目录。
 
-在首个版本正式发布前，请使用源码构建方式：
+### 从源码构建
+
+需要 Go 1.24 或更高版本：
 
 ```bash
 git clone https://github.com/Garcke/miyoushe-cli.git
