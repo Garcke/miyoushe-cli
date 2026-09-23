@@ -71,6 +71,8 @@ mys forum discussion <gids> [--json]
 mys forum posts <forum-id> --gids <gids> [--json]
 ```
 
+详细说明：[使用指南索引](guides/README.md) · [`mys forum discussion`](guides/commands/forum-discussion.md)
+
 使用 `mys <command> --help` 查看完整参数。
 
 ```bash
