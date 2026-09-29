@@ -76,6 +76,10 @@ func resolveGameForum(ctx context.Context, deps Deps, gameSel, forumSel string) 
 	}
 	f, oerr := forum.ResolveForum(forumSel, forums)
 	if oerr != nil {
+		// 选择器失败时给出一条安全下一步：查看该游戏的分区目录。
+		if oerr.Action == nil {
+			oerr = oerr.WithAction(output.RunCommand("forum", "list", "--game", strings.TrimSpace(gameSel)))
+		}
 		return forum.GameMeta{}, forum.Forum{}, oerr
 	}
 	return game, f, nil

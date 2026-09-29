@@ -2022,3 +2022,78 @@ func TestAuthLogin_SuccessOutputContract(t *testing.T) {
 		}
 	})
 }
+
+// ---------- 选择器失败：人类模式候选与安全下一步 ----------
+
+func TestForumSelectorFailure_HumanCandidates(t *testing.T) {
+	// 生产路径：进程入口在 RunE 返回错误后调用 emitFailure；root.Execute
+	// 本身不打印失败，这里直接验证渲染器。
+	oe := output.Err(output.CodeInputInvalid, "Forum ID 999 does not belong to the selected game").
+		WithAction(output.RunCommand("forum", "list", "--game", "ys"))
+	oe.Context = map[string]any{"candidates": []map[string]string{
+		{"forum_id": "26", "name": "酒馆"},
+		{"forum_id": "43", "name": "攻略"},
+		{"forum_id": "29", "name": "同人图"},
+	}}
+	errb := &bytes.Buffer{}
+	emitFailure(Deps{Out: &bytes.Buffer{}, ErrOut: errb}, &cobra.Command{Use: "feed"}, oe)
+	errStr := errb.String()
+	for _, want := range []string{
+		"Error [INPUT_INVALID]: Forum ID 999 does not belong to the selected game.",
+		"Candidates: 26 酒馆, 43 攻略, 29 同人图",
+		"Next: mys-cli forum list --game ys",
+	} {
+		if !strings.Contains(errStr, want) {
+			t.Errorf("人类错误缺 %q:\n%s", want, errStr)
+		}
+	}
+}
+
+func TestGameSelectorFailure_HumanCandidates(t *testing.T) {
+	oe := output.Err(output.CodeInputInvalid, "Unknown game selector \"999\"; use a positive GID or the en_name shown by forum games").
+		WithAction(output.RunCommand("forum", "games"))
+	oe.Context = map[string]any{"candidates": []map[string]string{
+		{"gids": "2", "en_name": "ys", "name": "原神"},
+		{"gids": "8", "en_name": "zzz", "name": "绝区零"},
+	}}
+	errb := &bytes.Buffer{}
+	emitFailure(Deps{Out: &bytes.Buffer{}, ErrOut: errb}, &cobra.Command{Use: "list"}, oe)
+	errStr := errb.String()
+	for _, want := range []string{
+		"Candidates: 2 ys 原神, 8 zzz 绝区零",
+		"Next: mys-cli forum games",
+	} {
+		if !strings.Contains(errStr, want) {
+			t.Errorf("人类错误缺 %q:\n%s", want, errStr)
+		}
+	}
+}
+
+func TestCandidatesLine_CapsAtTwelve(t *testing.T) {
+	items := make([]map[string]string, 0, 15)
+	for i := 1; i <= 15; i++ {
+		items = append(items, map[string]string{"forum_id": fmt.Sprintf("%d", 100+i), "name": "分区"})
+	}
+	oe := output.Err(output.CodeInputInvalid, "Forum ID 999 does not belong to the selected game")
+	oe.Context = map[string]any{"candidates": items}
+	errb := &bytes.Buffer{}
+	emitFailure(Deps{Out: &bytes.Buffer{}, ErrOut: errb}, &cobra.Command{Use: "feed"}, oe)
+	if !strings.Contains(errb.String(), "… (+3 more)") {
+		t.Errorf("超过 12 项应折叠: %s", errb.String())
+	}
+}
+
+func TestForumSelectorFailure_JSONActionAndCandidates(t *testing.T) {
+	env := newTestEnv(t)
+	res := env.run(t, "forum", "posts", "--game", "2", "--forum", "999", "--json")
+	if res.OK || res.Error.Code != output.CodeInputInvalid {
+		t.Fatalf("应 INPUT_INVALID: %+v", res.Error)
+	}
+	if res.Error.Action == nil ||
+		!reflect.DeepEqual(res.Error.Action.Args, []string{"forum", "list", "--game", "2"}) {
+		t.Errorf("应给出 forum list 下一步: %+v", res.Error.Action)
+	}
+	if _, ok := res.Error.Context["candidates"]; !ok {
+		t.Errorf("context 应保留 candidates: %v", res.Error.Context)
+	}
+}

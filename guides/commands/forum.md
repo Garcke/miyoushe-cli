@@ -147,7 +147,7 @@ mys-cli forum feed --game ys --forum 26 --cursor <cursor>
 }
 ```
 
-人类模式则输出一行 `Error [INPUT_INVALID]: …` 和至多一条 `Next:` 建议。Agent 应依赖 `code`/`kind`/`context.candidates`/`action.args`，不要解析英文句子。
+人类模式则输出一行 `Error [INPUT_INVALID]: …`、选择器失败时的一行 `Candidates: …`（与 JSON 的 `context.candidates` 同源，上限 12 项）和至多一条 `Next:` 建议。Agent 应依赖 `code`/`kind`/`context.candidates`/`action.args`，不要解析英文句子。
 
 ## 常见问题
 
@@ -161,7 +161,7 @@ mys-cli forum feed --game ys --forum 26 --cursor <cursor>
 
 ### 分区名不唯一或不存在
 
-改用 `forum list` 输出中的数字 forum ID；纯数字输入始终按 ID 解析，不会退化为名称匹配。
+错误里会列出候选（JSON 的 `context.candidates`、人类模式的 `Candidates:` 行），并给出 `Next: mys-cli forum list --game <选择器>`。改用 `forum list` 输出中的数字 forum ID；纯数字输入始终按 ID 解析，不会退化为名称匹配。
 
 ### 热帖没有结果
 

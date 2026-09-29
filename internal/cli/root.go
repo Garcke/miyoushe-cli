@@ -134,6 +134,8 @@ func emitFailure(deps Deps, cmd *cobra.Command, oe *output.Error) {
 		return
 	}
 	fmt.Fprintf(deps.ErrOut, "Error [%s]: %s.\n", oe.Code, presentation.SafeInline(oe.Message))
+	// 选择器解析失败时，人类模式也列出候选（JSON 侧读 context.candidates）。
+	printCandidates(deps.ErrOut, oe)
 	if a := oe.Action; a != nil && a.Type == "run_command" && a.Executable != "" {
 		next := a.Executable
 		for _, arg := range a.Args {
@@ -144,6 +146,67 @@ func emitFailure(deps Deps, cmd *cobra.Command, oe *output.Error) {
 	for _, w := range oe.Warnings {
 		fmt.Fprintf(deps.ErrOut, "Warning: %s\n", presentation.SafeInline(w))
 	}
+}
+
+// printCandidates 人类模式渲染选择器候选（error.context.candidates）：
+// 论坛候选为 "ID 名称"，游戏候选为 "GID en_name 名称"；最多 12 项，
+// 其余折叠为 "… (+N more)"。JSON 侧结构不变，仍读 context.candidates。
+func printCandidates(w io.Writer, oe *output.Error) {
+	items := candidateLabels(oe.Context["candidates"])
+	if len(items) == 0 {
+		return
+	}
+	const maxShown = 12
+	suffix := ""
+	if len(items) > maxShown {
+		suffix = fmt.Sprintf(" … (+%d more)", len(items)-maxShown)
+		items = items[:maxShown]
+	}
+	fmt.Fprintf(w, "Candidates: %s%s\n", strings.Join(items, ", "), suffix)
+}
+
+// candidateLabels 把候选列表渲染为紧凑标签；只认识 forum_id/name 与
+// gids/en_name/name 两种已定义形态，其他结构原样忽略（不猜测）。
+func candidateLabels(raw any) []string {
+	var maps []map[string]any
+	switch v := raw.(type) {
+	case []map[string]string:
+		for _, m := range v {
+			mm := make(map[string]any, len(m))
+			for k, val := range m {
+				mm[k] = val
+			}
+			maps = append(maps, mm)
+		}
+	case []any:
+		for _, it := range v {
+			if m, ok := it.(map[string]any); ok {
+				maps = append(maps, m)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]string, 0, len(maps))
+	for _, m := range maps {
+		name := presentation.SafeInline(stringField(m, "name"))
+		if id := stringField(m, "forum_id"); id != "" {
+			out = append(out, strings.TrimSpace(id+" "+name))
+			continue
+		}
+		gids, en := stringField(m, "gids"), stringField(m, "en_name")
+		if gids != "" || en != "" {
+			out = append(out, strings.TrimSpace(gids+" "+en+" "+name))
+		}
+	}
+	return out
+}
+
+func stringField(m map[string]any, key string) string {
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
 }
 
 // unknownCommandErr 构造未知子命令的 INPUT_INVALID 错误并列出可用子命令。
