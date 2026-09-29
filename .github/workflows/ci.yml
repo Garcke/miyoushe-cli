@@ -86,9 +86,13 @@ jobs:
           # 匿名只读命令 + JSON 形状断言（真实网络）。
           # 数据中心出口可能被上游限流或超时：transport 级失败（retryable=true）
           # 记为环境限制并告警，其余失败与形状不符一律 fail。
+          # 记录出口 IP 与 curl 探针，便于复核这次 smoke 的网络环境
+          # （历史记录：2026-09-29 09:09-09:13 UTC 出现 runner 到上游的瞬时
+          # connect timeout，重跑即恢复；因此这里只作记录，不作判定）。
+          echo "egress ip: $(curl -s --max-time 10 https://api.ipify.org || echo unavailable)"
           echo "egress probe: $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://bbs-api.miyoushe.com/apihub/api/getGameList || echo curl-failed)"
           live=""
-          for attempt in 1 2 3; do
+          for attempt in 1 2 3 4 5; do
             if "$install_dir/$bin" forum games --json > games.json 2>games.err; then
               node -e "const d=require('./games.json'); if(d.schema_version!==1||d.ok!==true||d.error!==null||d.data.kind!=='list'||d.data.items.length<9){console.error('unexpected envelope', JSON.stringify(d).slice(0,300));process.exit(1);} console.log('forum games envelope OK, games:', d.data.items.length);"
               live="ok"
