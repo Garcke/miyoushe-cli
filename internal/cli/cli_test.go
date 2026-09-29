@@ -2097,3 +2097,36 @@ func TestForumSelectorFailure_JSONActionAndCandidates(t *testing.T) {
 		t.Errorf("context 应保留 candidates: %v", res.Error.Context)
 	}
 }
+
+func TestCandidatesAndNext_EscapeHostileValues(t *testing.T) {
+	// Upstream directory values and the user selector can both carry control
+	// characters: the display layer must escape everything and never write
+	// raw ESC/newlines to the terminal, while JSON action values and real
+	// request parameters stay untouched (architecture review 2026-09-29).
+	hostileSelector := "ys\x1b[31m\nx"
+	oe := output.Err(output.CodeInputInvalid, "Forum ID 26 does not belong to the selected game").
+		WithAction(output.RunCommand("forum", "list", "--game", hostileSelector))
+	oe.Context = map[string]any{"candidates": []map[string]string{
+		{"forum_id": "2\x1b6\n0", "name": "酒馆"},
+		{"gids": "8\x1b", "en_name": "zz\x0bz", "name": "绝区零"},
+	}}
+	errb := &bytes.Buffer{}
+	emitFailure(Deps{Out: &bytes.Buffer{}, ErrOut: errb}, &cobra.Command{Use: "feed"}, oe)
+	errStr := errb.String()
+	if strings.Contains(errStr, "\x1b") || strings.Contains(errStr, "\x0b") || strings.Contains(errStr, "\n\n") {
+		t.Errorf("human output must not contain raw control bytes or fake blank lines: %q", errStr)
+	}
+	// VT (0x0B) collapses to a space; ESC/C1 render as visible \xNN escapes.
+	for _, want := range []string{`2\x1B6 0 酒馆`, `8\x1B zz z 绝区零`, `ys\x1B[31m x`} {
+		if !strings.Contains(errStr, want) {
+			t.Errorf("expected escaped form %q:\n%s", want, errStr)
+		}
+	}
+	if got := oe.Action.Args[3]; got != hostileSelector {
+		t.Errorf("action args must not be rewritten: %q", got)
+	}
+	cands := oe.Context["candidates"].([]map[string]string)
+	if cands[0]["forum_id"] != "2\x1b6\n0" {
+		t.Errorf("context values must not be rewritten: %q", cands[0]["forum_id"])
+	}
+}
