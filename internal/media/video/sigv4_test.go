@@ -10,7 +10,7 @@ import (
 
 // 合成向量由独立实现（Python 复算脚本）生成，锁定 SigV4 回归；
 // 算法本身已用 2026-09-11 实抓的 Apply(GET)/Commit(POST) 两个真实样本
-// 字节级验证（见 docs/architecture/video-upload-protocol.md §8.1）。
+// 字节级验证。
 const sigv4VectorAuthorization = "HMAC-SHA256 Credential=AKTEST000000000000000000/20260911/cn-north-1/vod/request,SignedHeaders=host;x-date;x-security-token,Signature=17834840f86fc60ff1fbf8358a62ce4fe4ab4af7651ca40c87fd51f5dc7fe6c8"
 
 func TestSignVODRequest_ApplyVector(t *testing.T) {

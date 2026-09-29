@@ -22,10 +22,10 @@ import (
 func loginFlowError(err error, timeout time.Duration) *output.Error {
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		return output.Err(output.CodeLoginTimeout, "登录等待超过总时限 %s", timeout)
+		return output.Err(output.CodeLoginTimeout, "Login wait exceeded the total timeout %s", timeout)
 	case errors.Is(err, context.Canceled):
-		return output.Err(output.CodeCancelled, "用户已取消登录")
+		return output.Err(output.CodeCancelled, "User cancelled login")
 	default:
-		return output.Err(output.CodeInternal, "登录流程异常中止")
+		return output.Err(output.CodeInternal, "Login flow aborted unexpectedly")
 	}
 }

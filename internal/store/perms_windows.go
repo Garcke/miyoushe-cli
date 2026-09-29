@@ -125,18 +125,18 @@ func isPrivatePath(path string) (bool, error) {
 func checkFilePrivate(path string) *output.Error {
 	fi, err := os.Lstat(path)
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "检查凭据文件权限失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to check credential file permissions: %v", err)
 	}
 	if isReparsePath(path, fi) {
-		return output.Err(output.CodeStoreTarget, "凭据路径是符号链接/reparse point，拒绝使用")
+		return output.Err(output.CodeStoreTarget, "Credential path is a symlink/reparse point; refusing to use")
 	}
 	private, err := isPrivatePath(path)
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "读取凭据文件 DACL 失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to read the credential file DACL: %v", err)
 	}
 	if !private {
 		return output.Err(output.CodeStorePermission,
-			"凭据文件 DACL 对其他本地用户开放，请修复访问控制（仅保留当前用户/SYSTEM/Administrators）")
+			"Credential file DACL is open to other local users; fix access control (keep only the current user/SYSTEM/Administrators)")
 	}
 	return nil
 }
@@ -147,18 +147,18 @@ func checkDirPrivate(dir string) *output.Error {
 		return nil
 	}
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "检查凭据目录权限失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to check credential directory permissions: %v", err)
 	}
 	if isReparsePath(dir, fi) {
-		return output.Err(output.CodeStoreTarget, "凭据目录是符号链接/reparse point，拒绝使用")
+		return output.Err(output.CodeStoreTarget, "Credential directory is a symlink/reparse point; refusing to use")
 	}
 	private, err := isPrivatePath(dir)
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "读取凭据目录 DACL 失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to read the credential directory DACL: %v", err)
 	}
 	if !private {
 		return output.Err(output.CodeStorePermission,
-			"凭据目录 %s 的 DACL 对其他本地用户开放，请修复访问控制", dir)
+			"Credential directory %s has a DACL open to other local users; fix access control", dir)
 	}
 	return nil
 }

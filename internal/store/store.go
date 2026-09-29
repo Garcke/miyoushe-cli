@@ -1,6 +1,6 @@
 // Package store 负责 SToken 凭据的序列化、权限检查、完整写入与原子替换。
 //
-// 安全契约（认证设计 §5）：
+// 安全契约：
 //   - 凭据文件不是加密保险库：防止普通其他本地用户读取，不承诺抵御
 //     当前用户权限下的恶意进程或离线磁盘读取；
 //   - macOS/Linux：私有目录 0700、文件与临时文件 0600；
@@ -27,7 +27,7 @@ import (
 // SchemaVersion 是凭据格式版本。
 const SchemaVersion = 1
 
-// FlowV1 标识 HK4E 扫码 + Game Token 交换链路（认证设计 §5）。
+// FlowV1 标识 HK4E 扫码 + Game Token 交换链路。
 const FlowV1 = "hk4e_game_token_exchange"
 
 // FlowV2 标识 ma-cn-passport 扫码直出 SToken 链路（2026-09-15 实测打通）。
@@ -72,22 +72,22 @@ func NewCredentialsFlow(flow, uid, mid, stoken, deviceID, deviceFP string, now t
 
 func (c *Credentials) validate() error {
 	if c.SchemaVersion != SchemaVersion {
-		return fmt.Errorf("schema_version=%d 不是受支持的版本 %d", c.SchemaVersion, SchemaVersion)
+		return fmt.Errorf("schema_version=%d is not a supported version %d", c.SchemaVersion, SchemaVersion)
 	}
 	if c.Flow != FlowV1 && c.Flow != FlowV2 {
-		return fmt.Errorf("flow=%q 不是受支持的登录链路", c.Flow)
+		return fmt.Errorf("flow=%q is not a supported login flow", c.Flow)
 	}
 	if c.TokenKind != "stoken" {
-		return fmt.Errorf("token_kind=%q 非法，仅支持 stoken", c.TokenKind)
+		return fmt.Errorf("token_kind=%q is invalid; only stoken is supported", c.TokenKind)
 	}
 	if c.TokenType != 1 {
-		return fmt.Errorf("token_type=%d 非法，仅接受 SToken 对应值 1", c.TokenType)
+		return fmt.Errorf("token_type=%d is invalid; only the SToken value 1 is accepted", c.TokenType)
 	}
 	if c.UID == "" || c.MID == "" || c.Stoken == "" {
-		return errors.New("uid/mid/stoken 存在空字段")
+		return errors.New("uid/mid/stoken contains an empty field")
 	}
 	if _, err := time.Parse(time.RFC3339, c.SavedAt); err != nil {
-		return fmt.Errorf("saved_at 不是 RFC3339 时间: %w", err)
+		return fmt.Errorf("saved_at is not an RFC3339 time: %w", err)
 	}
 	return nil
 }
@@ -101,7 +101,7 @@ type Store struct {
 func DefaultDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
-		return "", fmt.Errorf("无法定位用户配置目录: %w", err)
+		return "", fmt.Errorf("Cannot locate the user config directory: %w", err)
 	}
 	return filepath.Join(base, "mys"), nil
 }
@@ -133,24 +133,24 @@ func (s *Store) Load() (*Credentials, *output.Error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, output.Err(output.CodeStoreIO, "读取凭据信息失败: %v", err)
+		return nil, output.Err(output.CodeStoreIO, "Failed to read credential information: %v", err)
 	}
 	if isReparsePath(path, fi) {
-		return nil, output.Err(output.CodeStoreTarget, "凭据路径是符号链接/reparse point，拒绝读取")
+		return nil, output.Err(output.CodeStoreTarget, "Credential path is a symlink/reparse point; refusing to read")
 	}
 	if !fi.Mode().IsRegular() {
-		return nil, output.Err(output.CodeStoreTarget, "凭据路径不是普通文件")
+		return nil, output.Err(output.CodeStoreTarget, "Credential path is not a regular file")
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, output.Err(output.CodeStoreIO, "读取凭据文件失败: %v", err)
+		return nil, output.Err(output.CodeStoreIO, "Failed to read the credential file: %v", err)
 	}
 	var creds Credentials
 	if err := json.Unmarshal(data, &creds); err != nil {
-		return nil, output.Err(output.CodeStoreCorrupt, "凭据文件格式损坏，无法解析")
+		return nil, output.Err(output.CodeStoreCorrupt, "Credential file is corrupt and cannot be parsed")
 	}
 	if err := creds.validate(); err != nil {
-		return nil, output.Err(output.CodeStoreCorrupt, "凭据文件校验失败: %v", err)
+		return nil, output.Err(output.CodeStoreCorrupt, "Credential file validation failed: %v", err)
 	}
 	return &creds, nil
 }
@@ -172,27 +172,27 @@ func (s *Store) CheckPermissions() *output.Error {
 // Save 以原子替换方式保存凭据。任何失败都保留原文件。
 func (s *Store) Save(creds *Credentials) *output.Error {
 	if creds == nil {
-		return output.Err(output.CodeInputInvalid, "凭据为空")
+		return output.Err(output.CodeInputInvalid, "Credential is empty")
 	}
 	if err := creds.validate(); err != nil {
-		return output.Err(output.CodeInputInvalid, "凭据未通过校验: %v", err)
+		return output.Err(output.CodeInputInvalid, "Credential failed validation: %v", err)
 	}
 
 	fi, err := os.Lstat(s.Dir)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		if err := os.MkdirAll(s.Dir, 0o700); err != nil {
-			return output.Err(output.CodeStoreIO, "创建凭据目录失败: %v", err)
+			return output.Err(output.CodeStoreIO, "Failed to create the credential directory: %v", err)
 		}
 		if err := hardenDir(s.Dir); err != nil {
-			return output.Err(output.CodeStorePermission, "凭据目录加固失败: %v", err)
+			return output.Err(output.CodeStorePermission, "Failed to harden the credential directory: %v", err)
 		}
 	case err != nil:
-		return output.Err(output.CodeStoreIO, "检查凭据目录失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to inspect the credential directory: %v", err)
 	case isReparsePath(s.Dir, fi):
-		return output.Err(output.CodeStoreTarget, "凭据目录是符号链接/reparse point，拒绝写入")
+		return output.Err(output.CodeStoreTarget, "Credential directory is a symlink/reparse point; refusing to write")
 	case !fi.Mode().IsDir():
-		return output.Err(output.CodeStoreTarget, "凭据目录路径不是目录")
+		return output.Err(output.CodeStoreTarget, "Credential directory path is not a directory")
 	default:
 		if err := checkDirPrivate(s.Dir); err != nil {
 			return err
@@ -207,13 +207,13 @@ func (s *Store) Save(creds *Credentials) *output.Error {
 
 	data, err := json.MarshalIndent(creds, "", "  ")
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "凭据序列化失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to serialize credentials: %v", err)
 	}
 	data = append(data, '\n')
 
 	tmp, err := os.CreateTemp(s.Dir, ".credentials-*.tmp")
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "创建临时凭据文件失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to create the temporary credential file: %v", err)
 	}
 	tmpName := tmp.Name()
 	ok := false
@@ -225,22 +225,22 @@ func (s *Store) Save(creds *Credentials) *output.Error {
 
 	if err := hardenFile(tmpName); err != nil {
 		tmp.Close()
-		return output.Err(output.CodeStorePermission, "临时凭据文件加固失败: %v", err)
+		return output.Err(output.CodeStorePermission, "Failed to harden the temporary credential file: %v", err)
 	}
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		return output.Err(output.CodeStoreIO, "写入临时凭据文件失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to write the temporary credential file: %v", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		return output.Err(output.CodeStoreIO, "同步临时凭据文件失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to sync the temporary credential file: %v", err)
 	}
 	if err := tmp.Close(); err != nil {
-		return output.Err(output.CodeStoreIO, "关闭临时凭据文件失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to close the temporary credential file: %v", err)
 	}
 
 	if err := os.Rename(tmpName, s.Path()); err != nil {
-		return output.Err(output.CodeStoreIO, "原子替换凭据文件失败（保留原文件）: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to atomically replace the credential file (original kept): %v", err)
 	}
 	ok = true
 
@@ -260,13 +260,13 @@ func (s *Store) Delete() (bool, *output.Error) {
 		return false, nil
 	}
 	if err != nil {
-		return false, output.Err(output.CodeStoreIO, "检查凭据文件失败: %v", err)
+		return false, output.Err(output.CodeStoreIO, "Failed to inspect the credential file: %v", err)
 	}
 	if isReparsePath(path, fi) {
-		return false, output.Err(output.CodeStoreTarget, "凭据路径是符号链接/reparse point，拒绝删除")
+		return false, output.Err(output.CodeStoreTarget, "Credential path is a symlink/reparse point; refusing to delete")
 	}
 	if err := os.Remove(path); err != nil {
-		return false, output.Err(output.CodeStoreIO, "删除凭据文件失败: %v", err)
+		return false, output.Err(output.CodeStoreIO, "Failed to delete the credential file: %v", err)
 	}
 	return true, nil
 }

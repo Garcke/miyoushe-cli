@@ -8,7 +8,7 @@ import (
 	"mihoyo_cli/internal/store"
 )
 
-// Capability 是社区能力标识（社区功能设计 §7）。
+// Capability 是社区能力标识。
 type Capability string
 
 const (
@@ -54,7 +54,7 @@ func (p *Provider) Load() (Session, *output.Error) {
 	}
 	if creds == nil {
 		return Session{}, output.Err(output.CodeAuthInvalid,
-			"未登录：凭据文件不存在（%s），请先执行 mys auth login", p.Store.Path())
+			"Not logged in: credentials file not found (%s); run mys-cli auth login first", p.Store.Path())
 	}
 	return Session{
 		UID:             creds.UID,
@@ -71,7 +71,7 @@ func (p *Provider) Load() (Session, *output.Error) {
 func (p *Provider) Require(cap Capability) (Session, *output.Error) {
 	if cap != CapReadAccount {
 		return Session{}, output.Err(output.CodeFeatureUnavailable,
-			"能力 %s 尚未开放：适配器未达到 adapter_ready 门禁", cap)
+			"Capability %s is not available yet: the adapter has not reached the adapter_ready gate", cap)
 	}
 	return p.Load()
 }

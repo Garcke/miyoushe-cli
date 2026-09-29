@@ -126,7 +126,7 @@ func TestProbe_Errors(t *testing.T) {
 		}
 	})
 	t.Run("目录路径", func(t *testing.T) {
-		if _, oerr := Probe(t.TempDir()); oerr == nil || !strings.Contains(oerr.Message, "常规文件") {
+		if _, oerr := Probe(t.TempDir()); oerr == nil || !strings.Contains(oerr.Message, "regular file") {
 			t.Errorf("oerr = %v", oerr)
 		}
 	})

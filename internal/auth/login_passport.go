@@ -63,7 +63,7 @@ type passportScan struct {
 // 渲染器的清理由调用方负责（正常退出、错误、取消都要清理）。
 func (s *Service) LoginPassport(ctx context.Context, cfg Config, render Renderer, progress ProgressFunc) (*store.Credentials, *output.Error) {
 	if s.PassportClient == nil {
-		return nil, output.Err(output.CodeInternal, "PassportClient 未配置")
+		return nil, output.Err(output.CodeInternal, "PassportClient is not configured")
 	}
 	if progress == nil {
 		progress = func(string) {}
@@ -99,7 +99,7 @@ func (s *Service) LoginPassport(ctx context.Context, cfg Config, render Renderer
 		}
 		if !s.now().Before(deadline) {
 			return nil, output.Err(output.CodeLoginTimeout,
-				"登录等待超过总时限 %s", cfg.Timeout)
+				"Login wait exceeded the total timeout %s", cfg.Timeout)
 		}
 		qr, oerr := s.createPassportQR(flowCtx, device)
 		if oerr != nil {
@@ -140,7 +140,7 @@ func (s *Service) createPassportQR(ctx context.Context, dev protocol.DeviceConte
 		return nil, oerr
 	}
 	if data.URL == "" || data.Ticket == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "建码响应缺少 url/ticket")
+		return nil, output.Err(output.CodeRemoteRejected, "QR creation response is missing url/ticket")
 	}
 	return &data, nil
 }
@@ -153,7 +153,7 @@ func (s *Service) pollPassportConfirm(ctx context.Context, cfg Config, deadline 
 		Ticket string `json:"ticket"`
 	}{Ticket: ticket})
 	if err != nil {
-		return nil, output.Err(output.CodeInternal, "构造轮询请求失败: %v", err), false
+		return nil, output.Err(output.CodeInternal, "Failed to build the polling request: %v", err), false
 	}
 	fails := 0
 	lastStat := ""
@@ -164,7 +164,7 @@ func (s *Service) pollPassportConfirm(ctx context.Context, cfg Config, deadline 
 		now := s.now()
 		rem := deadline.Sub(now)
 		if rem <= 0 {
-			return nil, output.Err(output.CodeLoginTimeout, "登录等待超过总时限 %s", cfg.Timeout), false
+			return nil, output.Err(output.CodeLoginTimeout, "Login wait exceeded the total timeout %s", cfg.Timeout), false
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, minDuration(cfg.RequestTimeout, rem))
@@ -184,7 +184,7 @@ func (s *Service) pollPassportConfirm(ctx context.Context, cfg Config, deadline 
 			fails++
 			if fails >= cfg.MaxPollFails {
 				return nil, output.Err(output.CodeRemoteRejected,
-					"查询扫码状态连续失败 %d 次: %s", fails, oerr.Message), false
+					"QR scan status query failed %d times in a row", fails), false
 			}
 			if !sleepCtx(ctx, minDuration(cfg.PollInterval, rem)) {
 				return nil, loginFlowError(ctx.Err(), cfg.Timeout), false
@@ -212,7 +212,7 @@ func (s *Service) pollPassportConfirm(ctx context.Context, cfg Config, deadline 
 			progress("confirmed")
 			return scan, nil, false
 		default:
-			return nil, output.Err(output.CodeRemoteRejected, "未知扫码状态 %q", data.Status), false
+			return nil, output.Err(output.CodeRemoteRejected, "Unknown QR scan status"), false
 		}
 
 		if !sleepCtx(ctx, minDuration(cfg.PollInterval, rem)) {
@@ -232,15 +232,15 @@ func parsePassportConfirmed(data passportConfirmData) (*passportScan, *output.Er
 		}
 	}
 	if stoken == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "确认响应缺少 SToken（token_type=1）")
+		return nil, output.Err(output.CodeRemoteRejected, "Confirmation response is missing SToken (token_type=1)")
 	}
 	uid := data.UserInfo.AID.String()
 	if uid == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "确认响应缺少 aid")
+		return nil, output.Err(output.CodeRemoteRejected, "Confirmation response is missing aid")
 	}
 	mid := data.UserInfo.MID.String()
 	if mid == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "确认响应缺少 MID")
+		return nil, output.Err(output.CodeRemoteRejected, "Confirmation response is missing MID")
 	}
 	return &passportScan{UID: uid, MID: mid, SToken: stoken}, nil
 }

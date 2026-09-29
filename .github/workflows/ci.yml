@@ -2,7 +2,6 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
 
 permissions:
@@ -14,7 +13,12 @@ concurrency:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -27,6 +31,9 @@ jobs:
           package-manager-cache: false
       - name: Test Go packages
         run: go test -count=1 ./...
+      - name: Test Go packages with race detector (Linux)
+        if: runner.os == 'Linux'
+        run: go test -race -count=1 ./...
       - name: Vet Go packages
         run: go vet ./...
       - name: Test npm installer
@@ -35,3 +42,78 @@ jobs:
       - name: Verify npm package contents
         working-directory: npm
         run: npm pack --dry-run
+
+  smoke:
+    name: smoke (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - name: Build, install and run the binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${{ runner.os }}" in
+            Windows) bin="mys-cli.exe" ;;
+            *) bin="mys-cli" ;;
+          esac
+          go build -trimpath -o "$RUNNER_TEMP/$bin" ./cmd/mys-cli
+
+          # 模拟用户级安装：复制到独立目录并保留可执行位。
+          install_dir="$RUNNER_TEMP/install"
+          mkdir -p "$install_dir"
+          cp "$RUNNER_TEMP/$bin" "$install_dir/$bin"
+          chmod +x "$install_dir/$bin" 2>/dev/null || true
+
+          "$install_dir/$bin" --version
+
+          # Unix 上验证 PATH 解析与可执行位（安装器最终要达成的情形）。
+          if [ "${{ runner.os }}" != "Windows" ]; then
+            PATH="$install_dir:$PATH" "$bin" --version
+          fi
+
+          # 匿名只读命令 + JSON 形状断言（真实网络）。
+          # 数据中心出口可能被上游限流或超时：transport 级失败（retryable=true）
+          # 记为环境限制并告警，其余失败与形状不符一律 fail。
+          # 记录出口 IP 与 curl 探针，便于复核这次 smoke 的网络环境
+          # （历史记录：2026-09-29 09:09-09:13 UTC 出现 runner 到上游的瞬时
+          # connect timeout，重跑即恢复；因此这里只作记录，不作判定）。
+          echo "egress ip: $(curl -s --max-time 10 https://api.ipify.org || echo unavailable)"
+          echo "egress probe: $(curl -s -o /dev/null -w '%{http_code}' --max-time 15 https://bbs-api.miyoushe.com/apihub/api/getGameList || echo curl-failed)"
+          live=""
+          for attempt in 1 2 3 4 5; do
+            if "$install_dir/$bin" forum games --json > games.json 2>games.err; then
+              node -e "const d=require('./games.json'); if(d.schema_version!==1||d.ok!==true||d.error!==null||d.data.kind!=='list'||d.data.items.length<9){console.error('unexpected envelope', JSON.stringify(d).slice(0,300));process.exit(1);} console.log('forum games envelope OK, games:', d.data.items.length);"
+              live="ok"
+              break
+            fi
+            sleep 5
+          done
+          if [ "$live" != "ok" ]; then
+            if node -e "const d=require('./games.json'); process.exit(d && d.error && d.error.retryable === true ? 0 : 1);" 2>/dev/null; then
+              echo "::warning::live anonymous call unavailable from this runner (transport failure); local assertions still enforced"
+            else
+              echo "forum games failed:"; head -c 400 games.json; cat games.err; exit 1
+            fi
+          fi
+
+          # 本地校验零请求：缺 --gids 必须失败。
+          if "$install_dir/$bin" search posts 原神 --json >/dev/null 2>&1; then
+            echo "missing --gids must fail"; exit 1
+          fi
+          # 收紧后的 --order：非法取值本地拒绝。
+          if "$install_dir/$bin" search posts 原神 --gids 2 --order 3 --json >/dev/null 2>&1; then
+            echo "--order 3 must fail"; exit 1
+          fi
+          echo "smoke OK on ${{ runner.os }}"

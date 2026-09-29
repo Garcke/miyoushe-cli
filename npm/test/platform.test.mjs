@@ -15,10 +15,10 @@ test("rejects unsupported targets", () => {
 });
 
 test("builds exact GoReleaser asset names", () => {
-  assert.equal(assetName("v1.2.3", "win32", "x64"), "mys_1.2.3_windows_amd64.exe");
-  assert.equal(assetName("1.2.3-rc.1", "linux", "arm64"), "mys_1.2.3-rc.1_linux_arm64");
-  assert.equal(binaryName("win32"), "mys.exe");
-  assert.equal(binaryName("linux"), "mys");
+  assert.equal(assetName("v1.2.3", "win32", "x64"), "mys-cli_1.2.3_windows_amd64.exe");
+  assert.equal(assetName("1.2.3-rc.1", "linux", "arm64"), "mys-cli_1.2.3-rc.1_linux_arm64");
+  assert.equal(binaryName("win32"), "mys-cli.exe");
+  assert.equal(binaryName("linux"), "mys-cli");
 });
 
 test("validates versions before constructing URLs", () => {

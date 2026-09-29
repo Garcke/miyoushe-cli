@@ -2,19 +2,22 @@ package cli
 
 import (
 	"fmt"
+	"strconv"
 
 	"github.com/spf13/cobra"
 
 	"mihoyo_cli/internal/draft"
 	"mihoyo_cli/internal/output"
+	"mihoyo_cli/internal/presentation"
 	"mihoyo_cli/internal/protocol"
 )
 
 func newDraftCmd(deps Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "draft",
-		Short: "草稿查看（保存/发布/删除按协议证据门禁逐步开放）",
+		Short: "View drafts",
 	}
+	cmd.RunE = groupRunE(cmd)
 	cmd.AddCommand(newDraftListCmd(deps), newDraftShowCmd(deps))
 	return cmd
 }
@@ -27,13 +30,13 @@ func newDraftListCmd(deps Deps) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "查看草稿箱列表（默认跨桶首页预览）",
+		Short: "View the draft list (cross-bucket first-page preview by default)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cmd.Flags().Changed("kind") {
 				return output.Err(output.CodeInputInvalid,
-					"--kind 已移除：草稿的 view_type 桶与内容类型不是一一对应（视频草稿与长文同为 view_type=5），"+
-						"逐条详情分类尚未实现；请改用 --view-type 1|2|5 按桶查看")
+					"--kind has been removed: the draft view_type buckets do not map one-to-one to content types (video drafts and long posts share view_type=5), "+
+						"and per-item detail classification is not implemented; use --view-type 1|2|5 to browse by bucket")
 			}
 			sess, warnings, oerr := loadSessionWithWarning(deps)
 			if oerr != nil {
@@ -49,36 +52,67 @@ func newDraftListCmd(deps Deps) *cobra.Command {
 				return oerr
 			}
 			warnings = append(warnings, page.Warnings...)
-			if jsonMode(cmd) {
-				if page.Items == nil {
-					page.Items = []draft.Draft{}
+			next := page.NextCursor
+			if !page.HasMore {
+				next = ""
+			}
+			mode := "cursor"
+			resumable := page.HasMore && next != ""
+			ctx := map[string]any{}
+			var nextArgs []string
+			if viewType == 0 {
+				// Cross-bucket first-page preview cannot paginate .
+				mode = "preview"
+				resumable = false
+				ctx["scope"] = "cross-bucket-preview"
+				nextArgs = []string{"draft", "list", "--view-type", "1"}
+			} else {
+				ctx["view_type"] = viewType
+				if cursor != "" {
+					ctx["cursor"] = cursor
 				}
-				return output.Success(deps.Out,
-					output.ListData{Items: page.Items, HasMore: page.HasMore},
-					page.NextCursor, warnings)
+				if next != "" {
+					nextArgs = []string{"draft", "list", "--view-type", strconv.Itoa(viewType), "--cursor", next}
+				}
+			}
+			if jsonMode(cmd) {
+				items := page.Items
+				if items == nil {
+					items = []draft.Draft{}
+				}
+				// 服务端 view_type 与来源桶冲突等提示进入结构化 notices。
+				return output.SuccessNotices(deps.Out,
+					output.NewListData(items, page.HasMore, ctx, output.Pagination{
+						Mode: mode, Resumable: resumable, NextArgs: nextArgs,
+					}),
+					next, warnings, page.Notices)
 			}
 			printWarnings(deps, cmd, warnings)
+			for _, n := range page.Notices {
+				fmt.Fprintf(deps.ErrOut, "Warning: %s\n", presentation.SafeInline(n.Message))
+			}
 			if len(page.Items) == 0 {
-				fmt.Fprintln(deps.Out, "草稿箱为空")
+				fmt.Fprintln(deps.Out, "Draft box is empty")
 				return nil
 			}
 			for _, it := range page.Items {
-				fmt.Fprintf(deps.Out, "%s  vt=%d  %s  %s\n",
-					it.DraftID, it.ViewType, formatTime(it.UpdatedAt), truncate(it.Subject, 40))
+				fmt.Fprintf(deps.Out, "%s  %s  %s  %s\n",
+					presentation.SafeInline(it.DraftID), it.ContentTypeLabel, formatTime(it.UpdatedAt),
+					truncate(presentation.TitleOrPlaceholder(it.Subject), 40))
 			}
 			if page.HasMore && page.NextCursor != "" {
-				fmt.Fprintf(deps.Out, "下一页 cursor: %s\n", page.NextCursor)
+				fmt.Fprintf(deps.Out, "Next cursor: %s\n", presentation.SafeInline(page.NextCursor))
 			} else if page.HasMore {
-				fmt.Fprintln(deps.Out, "还有更多草稿（跨桶预览不支持续页，请用 --view-type 1|2|5 --cursor 遍历）")
+				fmt.Fprintln(deps.Out, "More drafts available (cross-bucket preview cannot paginate; use --view-type 1|2|5 --cursor)")
 			}
 			return nil
 		},
 	}
-	cmd.Flags().IntVar(&viewType, "view-type", 0, "草稿类型桶：1/2/5（默认 0=跨桶首页预览）")
-	cmd.Flags().StringVar(&cursor, "cursor", "", "服务端不透明游标（仅单桶模式）")
-	cmd.Flags().IntVar(&limit, "limit", 20, "本次输出总数上限")
-	// --kind 保留占位以给出明确迁移提示（ARCHITECTURE-V2 §6：桶号≠内容类型）。
-	cmd.Flags().String("kind", "", "已移除（见 --help 输出与 --kind 报错说明）")
+	cmd.Flags().IntVar(&viewType, "view-type", 0, "Draft type bucket: 1/2/5 (default 0 = cross-bucket first-page preview)")
+	cmd.Flags().StringVar(&cursor, "cursor", "", "Server-side opaque cursor (single-bucket mode only)")
+	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of items to output")
+	// --kind 保留占位以给出明确迁移提示。
+	cmd.Flags().String("kind", "", "Removed (see --help output and the --kind error message)")
 	_ = cmd.Flags().MarkHidden("kind")
 	return cmd
 }
@@ -86,7 +120,7 @@ func newDraftListCmd(deps Deps) *cobra.Command {
 func newDraftShowCmd(deps Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <draft-id>",
-		Short: "查看草稿详情",
+		Short: "View draft details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sess, warnings, oerr := loadSessionWithWarning(deps)
@@ -102,14 +136,13 @@ func newDraftShowCmd(deps Deps) *cobra.Command {
 				return output.Success(deps.Out, d, "", warnings)
 			}
 			printWarnings(deps, cmd, warnings)
-			fmt.Fprintf(deps.Out, "草稿: %s (%s)\n", d.DraftID, d.Subject)
-			fmt.Fprintf(deps.Out, "view_type: %d\n", d.ViewType)
-			if d.Describe != "" {
-				fmt.Fprintf(deps.Out, "正文: %s\n", d.Describe)
-			}
-			fmt.Fprintf(deps.Out, "图片: %d 张\n", len(d.Images))
+			fmt.Fprintf(deps.Out, "Draft: %s\n", presentation.SafeInline(d.DraftID))
+			fmt.Fprintf(deps.Out, "Type: %s\n", d.ContentTypeLabel)
+			fmt.Fprintf(deps.Out, "Title: %s\n", presentation.TitleOrPlaceholder(d.Subject))
+			fmt.Fprintf(deps.Out, "Body: %s\n", presentation.BodyOrPlaceholder(d.Describe))
+			fmt.Fprintf(deps.Out, "Images: %d\n", len(d.Images))
 			for _, u := range d.Images {
-				fmt.Fprintf(deps.Out, "  - %s\n", u)
+				fmt.Fprintf(deps.Out, "  - %s\n", presentation.SafeInline(u))
 			}
 			return nil
 		},

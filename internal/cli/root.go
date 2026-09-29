@@ -11,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"mihoyo_cli/internal/auth"
 	"mihoyo_cli/internal/buildinfo"
 	"mihoyo_cli/internal/output"
+	"mihoyo_cli/internal/presentation"
 	"mihoyo_cli/internal/qr"
 	"mihoyo_cli/internal/session"
 	"mihoyo_cli/internal/store"
@@ -57,7 +59,7 @@ func defaultClientFor(host string) *api.Client {
 	c, err := api.New("https://" + host)
 	if err != nil {
 		// 固定 host 白名单都是合法 URL；到这里说明代码错误。
-		panic("cli: 无效的固定 host: " + host)
+		panic("cli: invalid fixed host: " + host)
 	}
 	return c
 }
@@ -68,11 +70,12 @@ func defaultClientFor(host string) *api.Client {
 // 避免运行到一半才发现“尚未实现”。
 func NewRoot(deps Deps) *cobra.Command {
 	root := &cobra.Command{
-		Use:     "mys",
-		Short:   "米游社社区命令行工具",
+		Use:     output.Executable,
+		Short:   "Miyoushe community CLI",
 		Version: buildinfo.String(),
-		Long: "mys 是米游社社区 CLI。扫码登录、角色与内容查看已可用；" +
-			"内容发布类命令按协议证据门禁（fixture + 契约测试）分阶段开放。",
+		Long: `mys-cli is a command-line client for the Miyoushe community.
+It supports QR login and read-only role, post, draft, favorite, forum, and
+search commands. Publishing and other write operations are not available.`,
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		CompletionOptions: cobra.CompletionOptions{
@@ -80,7 +83,12 @@ func NewRoot(deps Deps) *cobra.Command {
 		},
 	}
 	root.SetVersionTemplate("{{printf \"%s version %s\\n\" .Name .Version}}")
-	root.PersistentFlags().Bool("json", false, "输出稳定 JSON envelope（失败写 stderr）")
+	root.RunE = groupRunE(root)
+	root.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
+		return output.Err(output.CodeInputInvalid, "%v", err).
+			WithAction(output.RunCommand(append(commandArgs(c), "--help")...))
+	})
+	root.PersistentFlags().Bool("json", false, "emit a stable JSON envelope on stdout")
 	root.AddCommand(
 		newAuthCmd(deps),
 		newRoleCmd(deps),
@@ -98,7 +106,7 @@ func NewRoot(deps Deps) *cobra.Command {
 func Execute() int {
 	deps, err := DefaultDeps()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "初始化失败:", err)
+		fmt.Fprintln(os.Stderr, "Error [INTERNAL]:", err)
 		return output.ExitInternal
 	}
 	root := NewRoot(deps)
@@ -108,7 +116,9 @@ func Execute() int {
 	if err := root.Execute(); err != nil {
 		var oe *output.Error
 		if !errors.As(err, &oe) {
-			oe = output.Err(output.CodeInternal, "%v", err)
+			// Cobra 的未知命令、未知 flag、参数数量错误统一映射为 INPUT_INVALID。
+			oe = output.Err(output.CodeInputInvalid, "%v", err).
+				WithAction(output.RunCommand("--help"))
 		}
 		emitFailure(deps, root, oe)
 		return oe.Exit
@@ -116,14 +126,137 @@ func Execute() int {
 	return output.ExitOK
 }
 
+// emitFailure 按统一契约输出失败：JSON 模式的最终 envelope 写 stdout；
+// 人类模式在 stderr 输出 "Error [CODE]: message." 与最多一条可执行下一步。
 func emitFailure(deps Deps, cmd *cobra.Command, oe *output.Error) {
 	if jsonMode(cmd) {
-		_ = output.Failure(deps.ErrOut, oe)
+		_ = output.Failure(deps.Out, oe)
 		return
 	}
-	fmt.Fprintln(deps.ErrOut, "错误:", oe.Message)
+	fmt.Fprintf(deps.ErrOut, "Error [%s]: %s.\n", oe.Code, presentation.SafeInline(oe.Message))
+	// 选择器解析失败时，人类模式也列出候选（JSON 侧读 context.candidates）。
+	printCandidates(deps.ErrOut, oe)
+	if a := oe.Action; a != nil && a.Type == "run_command" && a.Executable != "" {
+		next := a.Executable
+		for _, arg := range a.Args {
+			next += " " + arg
+		}
+		fmt.Fprintf(deps.ErrOut, "Next: %s\n", next)
+	}
 	for _, w := range oe.Warnings {
-		fmt.Fprintln(deps.ErrOut, "警告:", w)
+		fmt.Fprintf(deps.ErrOut, "Warning: %s\n", presentation.SafeInline(w))
+	}
+}
+
+// printCandidates 人类模式渲染选择器候选（error.context.candidates）：
+// 论坛候选为 "ID 名称"，游戏候选为 "GID en_name 名称"；最多 12 项，
+// 其余折叠为 "… (+N more)"。JSON 侧结构不变，仍读 context.candidates。
+func printCandidates(w io.Writer, oe *output.Error) {
+	items := candidateLabels(oe.Context["candidates"])
+	if len(items) == 0 {
+		return
+	}
+	const maxShown = 12
+	suffix := ""
+	if len(items) > maxShown {
+		suffix = fmt.Sprintf(" … (+%d more)", len(items)-maxShown)
+		items = items[:maxShown]
+	}
+	fmt.Fprintf(w, "Candidates: %s%s\n", strings.Join(items, ", "), suffix)
+}
+
+// candidateLabels 把候选列表渲染为紧凑标签；只认识 forum_id/name 与
+// gids/en_name/name 两种已定义形态，其他结构原样忽略（不猜测）。
+func candidateLabels(raw any) []string {
+	var maps []map[string]any
+	switch v := raw.(type) {
+	case []map[string]string:
+		for _, m := range v {
+			mm := make(map[string]any, len(m))
+			for k, val := range m {
+				mm[k] = val
+			}
+			maps = append(maps, mm)
+		}
+	case []any:
+		for _, it := range v {
+			if m, ok := it.(map[string]any); ok {
+				maps = append(maps, m)
+			}
+		}
+	default:
+		return nil
+	}
+	out := make([]string, 0, len(maps))
+	for _, m := range maps {
+		name := presentation.SafeInline(stringField(m, "name"))
+		if id := stringField(m, "forum_id"); id != "" {
+			out = append(out, strings.TrimSpace(id+" "+name))
+			continue
+		}
+		gids, en := stringField(m, "gids"), stringField(m, "en_name")
+		if gids != "" || en != "" {
+			out = append(out, strings.TrimSpace(gids+" "+en+" "+name))
+		}
+	}
+	return out
+}
+
+func stringField(m map[string]any, key string) string {
+	if s, ok := m[key].(string); ok {
+		return s
+	}
+	return ""
+}
+
+// unknownCommandErr 构造未知子命令的 INPUT_INVALID 错误并列出可用子命令。
+func unknownCommandErr(cmd *cobra.Command, arg string) *output.Error {
+	names := make([]string, 0, len(cmd.Commands()))
+	for _, c := range cmd.Commands() {
+		if c.IsAvailableCommand() && c.Name() != "help" {
+			names = append(names, c.Name())
+		}
+	}
+	oe := output.Err(output.CodeInputInvalid,
+		"Unknown command %q for %q. Available commands: %s",
+		arg, cmd.CommandPath(), strings.Join(names, ", "))
+	return oe.WithAction(output.RunCommand(append(commandArgs(cmd), "--help")...))
+}
+
+// groupRunE 是命令组的默认 RunE：无参数时显示帮助（父命令单独运行是正常用法），
+// 未知子命令必须以 INPUT_INVALID 失败，不能退回 Help 并返回 0。
+func groupRunE(cmd *cobra.Command) func(*cobra.Command, []string) error {
+	return func(c *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return cmd.Help()
+		}
+		return unknownCommandErr(cmd, args[0])
+	}
+}
+
+// commandArgs 把命令路径转换为 action 参数数组（去掉可执行名）：
+// "mys-cli forum list" -> ["forum", "list"]；根命令得到空数组。
+func commandArgs(c *cobra.Command) []string {
+	parts := strings.Split(c.CommandPath(), " ")
+	if len(parts) <= 1 {
+		return []string{}
+	}
+	return parts[1:]
+}
+
+// listPagination 统一列表分页契约：
+// has_more=false 时顶层 next_cursor 必须为空串；resumable 仅在确有可续游标时为 true。
+func listPagination(cursor string, hasMore bool, nextArgs []string) (string, output.Pagination) {
+	if !hasMore {
+		cursor = ""
+	}
+	if nextArgs == nil {
+		nextArgs = []string{}
+	}
+	return cursor, output.Pagination{
+		Mode:      "cursor",
+		Resumable: hasMore && cursor != "",
+		NextArgs:  nextArgs,
 	}
 }
 
@@ -155,6 +288,6 @@ func printWarnings(deps Deps, cmd *cobra.Command, warnings []string) {
 		return
 	}
 	for _, w := range warnings {
-		fmt.Fprintln(deps.ErrOut, "警告:", w)
+		fmt.Fprintf(deps.ErrOut, "Warning: %s\n", presentation.SafeInline(w))
 	}
 }

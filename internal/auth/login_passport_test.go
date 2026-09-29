@@ -204,7 +204,7 @@ func TestPassportLogin_RejectsWrongTokenType(t *testing.T) {
 	}
 	svc, sto, _ := newPassportService(t, st)
 	_, oerr := svc.LoginPassport(context.Background(), fastCfg(), &fakeRenderer{}, nil)
-	if oerr == nil || !strings.Contains(oerr.Message, "缺少 SToken") {
+	if oerr == nil || !strings.Contains(oerr.Message, "missing SToken") {
 		t.Fatalf("非 token_type=1 应拒绝: %+v", oerr)
 	}
 	if creds, _ := sto.Load(); creds != nil {
@@ -222,7 +222,7 @@ func TestPassportLogin_RejectsMissingAIDOrMID(t *testing.T) {
 			st := &passportServerState{queryResps: []string{resp}}
 			svc, sto, _ := newPassportService(t, st)
 			_, oerr := svc.LoginPassport(context.Background(), fastCfg(), &fakeRenderer{}, nil)
-			if oerr == nil || !strings.Contains(oerr.Message, "确认响应缺少") {
+			if oerr == nil || !strings.Contains(oerr.Message, "Confirmation response is missing") {
 				t.Fatalf("应因确认响应缺字段失败: %+v", oerr)
 			}
 			if creds, _ := sto.Load(); creds != nil {
@@ -233,11 +233,15 @@ func TestPassportLogin_RejectsMissingAIDOrMID(t *testing.T) {
 }
 
 func TestPassportLogin_UnknownStatusFails(t *testing.T) {
-	st := &passportServerState{queryResps: []string{passportStatusResp("Whatever")}}
+	const secret = "v2_stoken_synthetic_secret"
+	st := &passportServerState{queryResps: []string{passportStatusResp("unexpected " + secret)}}
 	svc, _, _ := newPassportService(t, st)
 	_, oerr := svc.LoginPassport(context.Background(), fastCfg(), &fakeRenderer{}, nil)
-	if oerr == nil || !strings.Contains(oerr.Message, "未知扫码状态") {
+	if oerr == nil || !strings.Contains(oerr.Message, "Unknown QR scan status") {
 		t.Fatalf("未知状态应失败: %+v", oerr)
+	}
+	if strings.Contains(oerr.Error(), secret) {
+		t.Errorf("未知状态回显 SToken: %s", oerr)
 	}
 }
 
@@ -295,7 +299,7 @@ func TestPassportLogin_PollConsecutiveFailsAborts(t *testing.T) {
 	svc := &Service{Store: sto, FPClient: c, PassportClient: c, Now: time.Now}
 
 	_, oerr := svc.LoginPassport(context.Background(), fastCfg(), &fakeRenderer{}, nil)
-	if oerr == nil || !strings.Contains(oerr.Message, "连续失败") {
+	if oerr == nil || !strings.Contains(oerr.Message, "times in a row") {
 		t.Fatalf("连续失败 3 次应中止: %+v", oerr)
 	}
 	if creds, _ := sto.Load(); creds != nil {

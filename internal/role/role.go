@@ -78,7 +78,7 @@ func (s *Service) List(ctx context.Context, sess session.Session, gameBiz string
 			r.GameUID = raw.RoleID.String()
 		}
 		if r.GameUID == "" {
-			return nil, output.Err(output.CodeRemoteRejected, "角色响应缺少 game_uid")
+			return nil, output.Err(output.CodeRemoteRejected, "Role response is missing game_uid")
 		}
 		roles = append(roles, r)
 	}

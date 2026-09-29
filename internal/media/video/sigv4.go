@@ -2,8 +2,7 @@
 // getVideoID / updateCover）与火山 VOD 直传适配器（Apply → transfer →
 // finish → Commit）。
 //
-// 证据来源：docs/architecture/video-upload-protocol.md（DEX 静态分析与
-// 2026-09-11 实抓全链路样本）。SigV4 算法已用实抓 Apply(GET) 与
+// 协议依据为 DEX 静态分析与 2026-09-11 的接口观察。SigV4 算法已用 Apply(GET) 与
 // Commit(POST) 两个样本字节级复现验证；分片 CRC32 为 IEEE（zlib）多项式。
 //
 // 门禁：本包完成契约测试后仅作为适配器底座，写命令仍按
@@ -88,10 +87,10 @@ func canonicalQuery(q url.Values) string {
 func SignVODRequest(method, rawURL string, body []byte, cred STSCredential, now time.Time) (http.Header, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("video: 无效 VOD URL: %w", err)
+		return nil, fmt.Errorf("video: invalid VOD URL: %w", err)
 	}
 	if u.Scheme != "https" || u.Host == "" {
-		return nil, fmt.Errorf("video: VOD 请求必须是 https 绝对地址")
+		return nil, fmt.Errorf("video: VOD request must use an absolute https URL")
 	}
 	host := u.Hostname()
 	if u.Port() != "" {

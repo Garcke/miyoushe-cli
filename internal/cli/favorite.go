@@ -8,6 +8,7 @@ import (
 	"mihoyo_cli/internal/favorite"
 	"mihoyo_cli/internal/output"
 	"mihoyo_cli/internal/post"
+	"mihoyo_cli/internal/presentation"
 	"mihoyo_cli/internal/protocol"
 	"mihoyo_cli/internal/role"
 )
@@ -15,8 +16,9 @@ import (
 func newFavoriteCmd(deps Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "favorite",
-		Short: "收藏查看（收藏/取消收藏按协议证据门禁逐步开放）",
+		Short: "View favorites",
 	}
+	cmd.RunE = groupRunE(cmd)
 	cmd.AddCommand(newFavoriteListCmd(deps))
 	return cmd
 }
@@ -30,7 +32,7 @@ func newFavoriteListCmd(deps Deps) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "查看指定角色的收藏帖子列表",
+		Short: "View the favorite posts of a given role",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sess, warnings, oerr := loadSessionWithWarning(deps)
@@ -57,7 +59,7 @@ func newFavoriteListCmd(deps Deps) *cobra.Command {
 				return oerr
 			}
 
-			warnings = append(warnings, fmt.Sprintf("使用角色 %s (%s)", r.GameUID, r.RegionName))
+			warnings = append(warnings, fmt.Sprintf("Using role %s (%s)", r.GameUID, r.RegionName))
 
 			var items any = page.Items
 			if page.Items == nil {
@@ -76,9 +78,14 @@ func newFavoriteListCmd(deps Deps) *cobra.Command {
 			}
 
 			if jsonMode(cmd) {
+				next, pag := listPagination(page.NextCursor, page.HasMore, nil)
+				ctx := map[string]any{
+					"game_uid": r.GameUID,
+					"region":   r.Region,
+				}
 				return output.Success(deps.Out,
-					output.ListData{Items: items, HasMore: page.HasMore},
-					page.NextCursor, warnings)
+					output.NewListData(items, page.HasMore, ctx, pag),
+					next, warnings)
 			}
 			printWarnings(deps, cmd, warnings)
 			type row struct {
@@ -97,22 +104,22 @@ func newFavoriteListCmd(deps Deps) *cobra.Command {
 				}
 			}
 			if len(rows) == 0 {
-				fmt.Fprintln(deps.Out, "该角色没有收藏帖子")
+				fmt.Fprintln(deps.Out, "This role has no favorite posts")
 				return nil
 			}
 			for _, rr := range rows {
 				fmt.Fprintf(deps.Out, "%s  vt=%d  %s  %s\n",
-					rr.id, rr.viewType, formatTime(rr.createdAt), truncate(rr.subject, 40))
+					presentation.SafeInline(rr.id), rr.viewType, formatTime(rr.createdAt), truncate(presentation.TitleOrPlaceholder(rr.subject), 40))
 			}
 			if page.HasMore {
-				fmt.Fprintf(deps.Out, "下一页 cursor: %s\n", page.NextCursor)
+				fmt.Fprintf(deps.Out, "Next cursor: %s\n", presentation.SafeInline(page.NextCursor))
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&roleSel, "role", "", "角色选择器：game_biz:game_uid:region 或可唯一匹配的 game_uid")
-	cmd.Flags().StringVar(&cursor, "cursor", "", "服务端不透明游标")
-	cmd.Flags().IntVar(&limit, "limit", 20, "本次输出总数上限")
-	cmd.Flags().BoolVar(&full, "full", false, "逐条补调帖子详情（更多请求，保留原顺序）")
+	cmd.Flags().StringVar(&roleSel, "role", "", "Role selector: game_biz:game_uid:region or a uniquely matching game_uid")
+	cmd.Flags().StringVar(&cursor, "cursor", "", "Server-side opaque cursor")
+	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of items to output")
+	cmd.Flags().BoolVar(&full, "full", false, "Also fetch post details for each item (more requests; original order preserved)")
 	return cmd
 }

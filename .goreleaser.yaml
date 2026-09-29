@@ -4,9 +4,9 @@ version: 2
 project_name: miyoushe-cli
 
 builds:
-  - id: mys
-    main: ./cmd/mys
-    binary: mys
+  - id: mys-cli
+    main: ./cmd/mys-cli
+    binary: mys-cli
     env:
       - CGO_ENABLED=0
     goos:
@@ -29,13 +29,13 @@ builds:
 archives:
   - id: release
     ids:
-      - mys
+      - mys-cli
     # The raw binary is consumed by the npm installer. Archives are provided
     # for users who prefer manual installation.
     formats:
       - binary
       - tar.gz
-    name_template: "mys_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    name_template: "mys-cli_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     format_overrides:
       - goos: windows
         formats:

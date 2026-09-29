@@ -45,7 +45,7 @@ func New(c *api.Client) *Service { return &Service{Client: c} }
 // List 拉取指定角色的收藏帖子列表。跨页中途失败时携带 resume_cursor。
 func (s *Service) List(ctx context.Context, sess session.Session, r role.Role, opts ListOptions) (Page, *output.Error) {
 	if r.GameUID == "" || r.Region == "" {
-		return Page{}, output.Err(output.CodeInputInvalid, "收藏列表需要角色的 game_uid 与 region")
+		return Page{}, output.Err(output.CodeInputInvalid, "Favorite list requires the role's game_uid and region")
 	}
 	limit := opts.Limit
 	if limit <= 0 {
@@ -78,7 +78,7 @@ func (s *Service) List(ctx context.Context, sess session.Session, r role.Role, o
 		if oerr := s.Client.DoJSON(ctx, "GET", "/painter/api/userFavouritePostList", q, nil, h, &data); oerr != nil {
 			if len(page.Items) > 0 {
 				oe := output.Err(output.CodeRemoteRejected,
-					"收藏列表第 %d 页读取失败: %s", len(page.Items)/pageSize+1, oerr.Message)
+					"Failed to read favorite list page %d: %s", len(page.Items)/pageSize+1, oerr.Message)
 				oe.ResumeCursor = cursor
 				return Page{}, oe
 			}
@@ -113,19 +113,19 @@ func ResolveSelector(roles []role.Role, sel string) (role.Role, *output.Error) {
 	case sel == "":
 		switch len(roles) {
 		case 0:
-			return role.Role{}, output.Err(output.CodeInputInvalid, "当前账号没有绑定游戏角色，无法使用收藏列表")
+			return role.Role{}, output.Err(output.CodeInputInvalid, "Current account has no bound game roles; the favorite list is unavailable")
 		case 1:
 			return roles[0], nil
 		default:
 			return role.Role{}, output.Err(output.CodeInputInvalid,
-				"存在多个绑定角色，请用 --role 明确选择（game_biz:game_uid:region 或可唯一匹配的 game_uid）:\n%s",
+				"Multiple bound roles found; choose one explicitly with --role (game_biz:game_uid:region or a uniquely matching game_uid):\n%s",
 				candidates(roles))
 		}
 	case strings.Contains(sel, ":"):
 		parts := strings.Split(sel, ":")
 		if len(parts) != 3 {
 			return role.Role{}, output.Err(output.CodeInputInvalid,
-				"--role 组合选择器格式应为 game_biz:game_uid:region")
+				"--role composite selector must have the form game_biz:game_uid:region")
 		}
 		for _, r := range roles {
 			if r.GameBiz == parts[0] && r.GameUID == parts[1] && r.Region == parts[2] {
@@ -133,7 +133,7 @@ func ResolveSelector(roles []role.Role, sel string) (role.Role, *output.Error) {
 			}
 		}
 		return role.Role{}, output.Err(output.CodeInputInvalid,
-			"没有匹配 --role %q 的角色；候选:\n%s", sel, candidates(roles))
+			"No role matches --role %q; candidates:\n%s", sel, candidates(roles))
 	default:
 		var matches []role.Role
 		for _, r := range roles {
@@ -144,12 +144,12 @@ func ResolveSelector(roles []role.Role, sel string) (role.Role, *output.Error) {
 		switch len(matches) {
 		case 0:
 			return role.Role{}, output.Err(output.CodeInputInvalid,
-				"没有 game_uid 为 %q 的角色；候选:\n%s", sel, candidates(roles))
+				"No role has game_uid %q; candidates:\n%s", sel, candidates(roles))
 		case 1:
 			return matches[0], nil
 		default:
 			return role.Role{}, output.Err(output.CodeInputInvalid,
-				"game_uid %q 命中多个角色，请用完整选择器 game_biz:game_uid:region:\n%s", sel, candidates(matches))
+				"game_uid %q matches multiple roles; use the full selector game_biz:game_uid:region:\n%s", sel, candidates(matches))
 		}
 	}
 }
@@ -196,7 +196,7 @@ func FillFull(ctx context.Context, sess session.Session, items []post.Summary, g
 	for i, oerr := range errs {
 		if oerr != nil {
 			return nil, output.Err(output.CodeRemoteRejected,
-				"补全帖子详情失败（post_id %s）: %s", items[i].PostID, oerr.Message)
+				"Failed to fetch post details (post_id %s): %s", items[i].PostID, oerr.Message)
 		}
 	}
 	return out, nil

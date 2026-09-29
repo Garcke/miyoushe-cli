@@ -15,7 +15,7 @@ func TestVersionFlag(t *testing.T) {
 	if err := root.Execute(); err != nil {
 		t.Fatal(err)
 	}
-	if got := out.String(); !strings.HasPrefix(got, "mys version ") {
+	if got := out.String(); !strings.HasPrefix(got, "mys-cli version ") {
 		t.Fatalf("--version output = %q", got)
 	}
 }
