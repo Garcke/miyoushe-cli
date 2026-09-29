@@ -53,13 +53,13 @@ func newSearchService(deps Deps) *search.Service {
 func requireGIDsFlag(cmd *cobra.Command, gids string) (string, *output.Error) {
 	if !cmd.Flags().Changed("gids") {
 		return "", output.Err(output.CodeInputInvalid, "Missing required option --gids").
-			WithAction(output.RunCommand(output.Executable, "forum", "games"))
+			WithAction(output.RunCommand("forum", "games"))
 	}
 	v := strings.TrimSpace(gids)
 	if !positiveIntPattern.MatchString(v) {
 		return "", output.Err(output.CodeInputInvalid,
 			"--gids must be a positive integer in [1-9][0-9]* (got %q)", gids).
-			WithAction(output.RunCommand(output.Executable, "forum", "games"))
+			WithAction(output.RunCommand("forum", "games"))
 	}
 	if _, err := strconv.ParseInt(v, 10, 64); err != nil {
 		return "", output.Err(output.CodeInputInvalid, "--gids overflows int64 (got %q)", gids)

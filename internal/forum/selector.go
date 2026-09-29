@@ -77,7 +77,7 @@ func ResolveGame(selector string, games []GameMeta) (GameMeta, *output.Error) {
 	sel := strings.TrimSpace(selector)
 	if sel == "" {
 		return GameMeta{}, output.Err(output.CodeInputInvalid,
-			"Missing required option --game").WithAction(output.RunCommand(output.Executable, "forum", "games"))
+			"Missing required option --game").WithAction(output.RunCommand("forum", "games"))
 	}
 	if id, ok := parsePositiveInt64(sel); ok {
 		for _, g := range games {
@@ -87,7 +87,7 @@ func ResolveGame(selector string, games []GameMeta) (GameMeta, *output.Error) {
 		}
 		oe := output.Err(output.CodeInputInvalid, "Game GID %s is not in the current game directory", sel)
 		oe.Context = map[string]any{"candidates": gameCandidates(games)}
-		return GameMeta{}, oe.WithAction(output.RunCommand(output.Executable, "forum", "games"))
+		return GameMeta{}, oe.WithAction(output.RunCommand("forum", "games"))
 	}
 	// en_name：服务端原始小写 ASCII 值，精确匹配（不做大小写折叠）。
 	for _, g := range games {
@@ -98,7 +98,7 @@ func ResolveGame(selector string, games []GameMeta) (GameMeta, *output.Error) {
 	oe := output.Err(output.CodeInputInvalid,
 		"Unknown game selector %q; use a positive GID or the en_name shown by forum games", sel)
 	oe.Context = map[string]any{"candidates": gameCandidates(games)}
-	return GameMeta{}, oe.WithAction(output.RunCommand(output.Executable, "forum", "games"))
+	return GameMeta{}, oe.WithAction(output.RunCommand("forum", "games"))
 }
 
 func gameCandidates(games []GameMeta) []map[string]string {

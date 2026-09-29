@@ -562,6 +562,10 @@ func TestSearchPosts_GIDsContract(t *testing.T) {
 		if res.OK || res.Error.Code != output.CodeInputInvalid {
 			t.Fatalf("缺 --gids 应 INPUT_INVALID: %+v", res.Error)
 		}
+		if a := res.Error.Action; a == nil || a.Executable != "mys-cli" ||
+			!reflect.DeepEqual(a.Args, []string{"forum", "games"}) {
+			t.Errorf("下一步不得在 args 中重复可执行文件名: %+v", a)
+		}
 		if q := env.log.snapshot(); len(q) != 0 {
 			t.Errorf("缺 --gids 不得发请求: %v", q)
 		}

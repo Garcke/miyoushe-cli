@@ -34,8 +34,9 @@ func TestResolveGame(t *testing.T) {
 		if oerr == nil || oerr.Code != output.CodeInputInvalid {
 			t.Errorf("selector %q 应 INPUT_INVALID: %v", sel, oerr)
 		}
-		if oerr != nil && oerr.Action == nil {
-			t.Errorf("selector %q 应给出安全下一步", sel)
+		if oerr != nil && (oerr.Action == nil || oerr.Action.Executable != "mys-cli" ||
+			strings.Join(oerr.Action.Args, " ") != "forum games") {
+			t.Errorf("selector %q 应给出可直接执行且不重复可执行文件名的下一步: %+v", sel, oerr.Action)
 		}
 	}
 
