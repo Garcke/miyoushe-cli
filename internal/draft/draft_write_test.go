@@ -76,7 +76,7 @@ func TestDraftSave_HappyPath(t *testing.T) {
 	if err := json.Unmarshal([]byte(st.saveBody), &body); err != nil {
 		t.Fatalf("body 非法: %v", err)
 	}
-	// 契约锁定（实测 §4）：新建不带 draft_id；block_reply_img 省略（0 值）；
+	// 契约锁定：新建不带 draft_id；block_reply_img 省略（0 值）；
 	// structured_content 是 JSON 字符串形态；forum_id 字符串。
 	for _, forbidden := range []string{"draft_id", "block_reply_img", "link_card_list"} {
 		if _, ok := body[forbidden]; ok {
@@ -98,7 +98,7 @@ func TestDraftSave_HappyPath(t *testing.T) {
 }
 
 func TestDraftSave_BlockReplyImgIntOnly(t *testing.T) {
-	// 实测 §4.1：block_reply_img 只能是 JSON number；设 1 时以 int 发送。
+	// block_reply_img 只能是 JSON number；设 1 时以 int 发送。
 	st := &writeServer{}
 	srv := newWriteServer(t, st)
 	t.Cleanup(srv.Close)

@@ -1,6 +1,6 @@
 // Package api 实现有界 HTTP 响应读取、retcode envelope 解析与脱敏错误。
 //
-// 信任边界（总体架构 §6）：
+// 信任边界：
 //   - 单个 JSON 响应上限 1 MiB，超出即失败；
 //   - 不跟随重定向（含凭据的请求绝不重定向）；
 //   - 错误消息不包含原始请求/响应或带敏感参数的 URL；
@@ -79,10 +79,10 @@ type Client struct {
 func New(base string) (*Client, error) {
 	u, err := url.Parse(base)
 	if err != nil {
-		return nil, fmt.Errorf("api: 无效 base URL: %w", err)
+		return nil, fmt.Errorf("api: invalid base URL: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" || u.Host == "" {
-		return nil, fmt.Errorf("api: base URL 必须是 http/https 绝对地址")
+		return nil, fmt.Errorf("api: base URL must be an absolute http/https URL")
 	}
 	return &Client{
 		Base: strings.TrimRight(base, "/"),
@@ -102,7 +102,6 @@ func New(base string) (*Client, error) {
 // envelope 是米游社标准返回结构。Retcode 用指针检测“缺少成功标志”。
 type envelope struct {
 	Retcode *int            `json:"retcode"`
-	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data"`
 }
 
@@ -124,7 +123,7 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.Base+path, rdr)
 	if err != nil {
-		return nil, output.Err(output.CodeRemoteRejected, "构造请求失败")
+		return nil, output.Err(output.CodeRemoteRejected, "Failed to build request")
 	}
 	if query != nil {
 		req.URL.RawQuery = query.Encode()
@@ -148,7 +147,7 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, output.Err(output.CodeRemoteRejected, "远端返回 HTTP 状态 %d", resp.StatusCode)
+		return nil, output.Err(output.CodeRemoteRejected, "Remote returned HTTP status %d", resp.StatusCode)
 	}
 
 	limited := io.LimitReader(resp.Body, c.MaxBytes+1)
@@ -157,21 +156,23 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, errFromCtx(ctxErr)
 		}
-		return nil, transportErr(output.Err(output.CodeRemoteRejected, "读取响应失败"))
+		return nil, transportErr(output.Err(output.CodeRemoteRejected, "Failed to read response"))
 	}
 	if int64(len(data)) > c.MaxBytes {
-		return nil, output.Err(output.CodeRemoteRejected, "响应超过 %d 字节上限", c.MaxBytes)
+		return nil, output.Err(output.CodeRemoteRejected, "Response exceeds the %d byte limit", c.MaxBytes)
 	}
 
 	var env envelope
 	if err := json.Unmarshal(data, &env); err != nil {
-		return nil, output.Err(output.CodeRemoteRejected, "响应不是有效的 JSON envelope")
+		return nil, output.Err(output.CodeRemoteRejected, "Response is not a valid JSON envelope")
 	}
 	if env.Retcode == nil {
-		return nil, output.Err(output.CodeRemoteRejected, "响应缺少 retcode 成功标志")
+		return nil, output.Err(output.CodeRemoteRejected, "Response is missing the retcode success flag")
 	}
 	if *env.Retcode != 0 {
-		oe := output.Err(output.CodeRemoteRejected, "远端返回错误码 %d: %s", *env.Retcode, env.Message)
+		// 上游 message 不可信，可能回显请求中的 SToken 或扫码 ticket。
+		// 仅保留数值 retcode 供机器判断，remote_message 留空（JSON 为 null）。
+		oe := output.Err(output.CodeRemoteRejected, "Remote returned error code %d", *env.Retcode)
 		switch *env.Retcode {
 		case retcodeAuthInvalid:
 			oe.Code = output.CodeAuthInvalid
@@ -183,7 +184,7 @@ func (c *Client) Do(ctx context.Context, method, path string, query url.Values, 
 		return nil, oe.WithRetcode(*env.Retcode)
 	}
 	if len(env.Data) == 0 || string(env.Data) == "null" {
-		return nil, output.Err(output.CodeRemoteRejected, "响应缺少 data 字段")
+		return nil, output.Err(output.CodeRemoteRejected, "Response is missing the data field")
 	}
 	return env.Data, nil
 }
@@ -195,7 +196,7 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, query url.Valu
 		return oerr
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return output.Err(output.CodeRemoteRejected, "响应 data 字段结构与预期不符")
+		return output.Err(output.CodeRemoteRejected, "Response data does not match the expected structure")
 	}
 	return nil
 }
@@ -203,26 +204,26 @@ func (c *Client) DoJSON(ctx context.Context, method, path string, query url.Valu
 // errFromCtx 把上下文错误映射为可分类错误。
 func errFromCtx(ctxErr error) *output.Error {
 	if errors.Is(ctxErr, context.Canceled) {
-		return output.Err(output.CodeCancelled, "已取消")
+		return output.Err(output.CodeCancelled, "Cancelled")
 	}
-	return transportErr(output.Err(output.CodeLoginTimeout, "请求超时"))
+	return transportErr(output.Err(output.CodeLoginTimeout, "Request timed out"))
 }
 
 // sanitizeNetErr 剥掉 *url.Error 中的 URL 与底层细节，避免 ticket 等敏感
 // query 参数进入错误消息。
 func sanitizeNetErr(err error) *output.Error {
-	oe := output.Err(output.CodeRemoteRejected, "网络请求失败")
+	oe := output.Err(output.CodeRemoteRejected, "Network request failed")
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
 		if urlErr.Timeout() {
-			return transportErr(output.Err(output.CodeRemoteRejected, "请求超时"))
+			return transportErr(output.Err(output.CodeRemoteRejected, "Request timed out"))
 		}
 		if errors.Is(urlErr.Err, context.DeadlineExceeded) {
-			return transportErr(output.Err(output.CodeRemoteRejected, "请求超时"))
+			return transportErr(output.Err(output.CodeRemoteRejected, "Request timed out"))
 		}
 		var netErr net.Error
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return transportErr(output.Err(output.CodeRemoteRejected, "请求超时"))
+			return transportErr(output.Err(output.CodeRemoteRejected, "Request timed out"))
 		}
 		return transportErr(oe)
 	}

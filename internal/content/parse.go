@@ -1,6 +1,6 @@
 // parse.go 实现严格 JSON 解析：拒绝非法 UTF-8、重复键与未知字段。
 // encoding/json 默认容忍重复键（后者覆盖前者）与未知字段，而 ContentSpec
-// 规范（community-features §4）要求两者都报错，因此先做 token 级预扫描。
+// 规范要求两者都报错，因此先做 token 级预扫描。
 package content
 
 import (
@@ -27,10 +27,10 @@ func decodeStrict(data []byte, out any) *output.Error {
 		return output.Err(output.CodeInputInvalid, format, args...)
 	}
 	if bytes.HasPrefix(data, utf8BOM) {
-		return inputErr("ContentSpec 带 UTF-8 BOM，请去掉后再试")
+		return inputErr("ContentSpec has a UTF-8 BOM; remove it and try again")
 	}
 	if !utf8.Valid(data) {
-		return inputErr("ContentSpec 不是合法的 UTF-8 文本")
+		return inputErr("ContentSpec is not valid UTF-8 text")
 	}
 	if err := rejectDuplicateKeys(data); err != nil {
 		return inputErr("%s", err.Error())
@@ -38,10 +38,10 @@ func decodeStrict(data []byte, out any) *output.Error {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(out); err != nil {
-		return inputErr("ContentSpec 解析失败: %s", friendlyJSONError(err))
+		return inputErr("Failed to parse ContentSpec: %s", friendlyJSONError(err))
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return inputErr("ContentSpec 文档末尾存在多余内容")
+		return inputErr("ContentSpec has trailing content after the document")
 	}
 	return nil
 }
@@ -80,7 +80,7 @@ func rejectDuplicateKeys(data []byte) error {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("JSON 语法错误: %s", friendlyJSONError(err))
+			return fmt.Errorf("JSON syntax error: %s", friendlyJSONError(err))
 		}
 		switch t := tok.(type) {
 		case json.Delim:
@@ -91,7 +91,7 @@ func rejectDuplicateKeys(data []byte) error {
 				stack = append(stack, &frame{})
 			case '}', ']':
 				if len(stack) == 0 {
-					return fmt.Errorf("JSON 括号不匹配")
+					return fmt.Errorf("JSON brackets do not match")
 				}
 				stack = stack[:len(stack)-1]
 				valueComplete()
@@ -103,7 +103,7 @@ func rejectDuplicateKeys(data []byte) error {
 			f := top()
 			if f.isObject && f.expectKey {
 				if _, dup := f.keys[t]; dup {
-					return fmt.Errorf("存在重复的 JSON 键 %q", t)
+					return fmt.Errorf("duplicate JSON key %q", t)
 				}
 				f.keys[t] = struct{}{}
 				f.expectKey = false

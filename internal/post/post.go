@@ -265,7 +265,7 @@ func (s *Service) List(ctx context.Context, sess session.Session, opts ListOptio
 		if oerr := s.Client.DoJSON(ctx, "GET", "/painter/api/user_instant/list", q, nil, headers(sess), &data); oerr != nil {
 			if len(page.Items) > 0 {
 				oe := output.Err(output.CodeRemoteRejected,
-					"帖子列表第 %d 页读取失败: %s", len(page.Items)/pageSize+1, oerr.Message)
+					"Failed to read post list page %d: %s", len(page.Items)/pageSize+1, oerr.Message)
 				oe.PartialData = ListDataJSON(page)
 				oe.ResumeCursor = cursor
 				return Page{}, oe
@@ -296,7 +296,7 @@ func (s *Service) List(ctx context.Context, sess session.Session, opts ListOptio
 // Get 拉取帖子详情。
 func (s *Service) Get(ctx context.Context, sess session.Session, postID string) (Detail, *output.Error) {
 	if postID == "" {
-		return Detail{}, output.Err(output.CodeInputInvalid, "post-id 不能为空")
+		return Detail{}, output.Err(output.CodeInputInvalid, "post-id cannot be empty")
 	}
 	q := url.Values{}
 	q.Set("post_id", postID)
@@ -309,7 +309,7 @@ func (s *Service) Get(ctx context.Context, sess session.Session, postID string) 
 		return Detail{}, oerr
 	}
 	if data.Post == nil {
-		return Detail{}, output.Err(output.CodeRemoteRejected, "帖子详情响应缺少 post 字段")
+		return Detail{}, output.Err(output.CodeRemoteRejected, "Post detail response is missing the post field")
 	}
 	raw := data.Post.Post
 	if raw == nil {
@@ -354,7 +354,7 @@ func (s *Service) Get(ctx context.Context, sess session.Session, postID string) 
 func (raw *postRaw) summary() (Summary, *output.Error) {
 	id := raw.PostID.String()
 	if id == "" {
-		return Summary{}, output.Err(output.CodeRemoteRejected, "帖子响应缺少 post_id")
+		return Summary{}, output.Err(output.CodeRemoteRejected, "Post response is missing post_id")
 	}
 	s := Summary{
 		PostID:    id,
@@ -418,7 +418,7 @@ func parseReleaseEnvelope(raw json.RawMessage) (PublishResult, *output.Error) {
 		ReleaseCheckResult *releaseCheckRaw `json:"release_check_result"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return PublishResult{}, output.Err(output.CodeRemoteRejected, "发布响应 data 结构与预期不符")
+		return PublishResult{}, output.Err(output.CodeRemoteRejected, "Publish response data does not match the expected structure")
 	}
 	res := PublishResult{Allowed: true}
 	if data.PostID.String() != "" && data.PostID.String() != "0" {
@@ -434,7 +434,7 @@ func parseReleaseEnvelope(raw json.RawMessage) (PublishResult, *output.Error) {
 	}
 	if res.PostID == "" && res.Allowed && res.ReviewID == "" {
 		return PublishResult{}, output.Err(output.CodeRemoteRejected,
-			"发布响应既无 post_id 也无 review_id，结果未知")
+			"Publish response has neither post_id nor review_id; result unknown")
 	}
 	return res, nil
 }
@@ -460,16 +460,16 @@ type VideoPublishOptions struct {
 // （进审核时 post_id=0、返回 post_review_id，撤回走 UndoReview）。
 func (s *Service) PublishVideo(ctx context.Context, sess session.Session, o VideoPublishOptions) (PublishResult, *output.Error) {
 	if o.Subject == "" {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "帖子标题不能为空")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "Post title cannot be empty")
 	}
 	if o.VideoID == "" {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "video-id 不能为空")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "video-id cannot be empty")
 	}
 	if o.CoverURL == "" {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "视频帖必须带封面 URL")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "Video posts must include a cover URL")
 	}
 	if o.ForumID == "" || o.GIDs == "" {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "forum-id 与 gids 不能为空")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "forum-id and gids cannot be empty")
 	}
 
 	meta, err := json.Marshal(map[string]any{
@@ -477,11 +477,11 @@ func (s *Service) PublishVideo(ctx context.Context, sess session.Session, o Vide
 		"vods":     []map[string]any{{"id": o.VideoID}},
 	})
 	if err != nil {
-		return PublishResult{}, output.Err(output.CodeInternal, "构造 meta_content 失败: %v", err)
+		return PublishResult{}, output.Err(output.CodeInternal, "Failed to build meta_content: %v", err)
 	}
 	sc, err := json.Marshal([]map[string]any{{"insert": o.Text}})
 	if err != nil {
-		return PublishResult{}, output.Err(output.CodeInternal, "构造 structured_content 失败: %v", err)
+		return PublishResult{}, output.Err(output.CodeInternal, "Failed to build structured_content: %v", err)
 	}
 	topics := o.TopicIDs
 	if topics == nil {
@@ -515,7 +515,7 @@ func (s *Service) PublishVideo(ctx context.Context, sess session.Session, o Vide
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
-		return PublishResult{}, output.Err(output.CodeInternal, "构造视频帖发布请求失败: %v", err)
+		return PublishResult{}, output.Err(output.CodeInternal, "Failed to build the video post publish request: %v", err)
 	}
 
 	raw, oerr := s.Client.Do(ctx, "POST", "/post/api/releasePost/v2", nil, b, headers(sess))
@@ -529,13 +529,13 @@ func (s *Service) PublishVideo(ctx context.Context, sess session.Session, o Vide
 // 已正式发布的帖子用 Delete）。
 func (s *Service) UndoReview(ctx context.Context, sess session.Session, reviewID string) *output.Error {
 	if reviewID == "" {
-		return output.Err(output.CodeInputInvalid, "review-id 不能为空")
+		return output.Err(output.CodeInputInvalid, "review-id cannot be empty")
 	}
 	b, err := json.Marshal(struct {
 		ReviewID string `json:"review_id"`
 	}{ReviewID: reviewID})
 	if err != nil {
-		return output.Err(output.CodeInternal, "构造撤审请求失败: %v", err)
+		return output.Err(output.CodeInternal, "Failed to build the review undo request: %v", err)
 	}
 	return s.Client.DoJSON(ctx, "POST", "/post/api/review/undo", nil, b, headers(sess), &struct{}{})
 }
@@ -543,16 +543,16 @@ func (s *Service) UndoReview(ctx context.Context, sess session.Session, reviewID
 // Publish 发布帖子（releasePost/v2）。只返回服务端结果，不代用户判断门槛去留。
 func (s *Service) Publish(ctx context.Context, sess session.Session, opts PublishOptions) (PublishResult, *output.Error) {
 	if opts.Subject == "" {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "帖子标题不能为空")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "Post title cannot be empty")
 	}
 	if opts.ForumID == "" {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "forum-id 不能为空")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "forum-id cannot be empty")
 	}
 	if opts.ViewType == 0 {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "view-type 必须显式指定（1/2/5）")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "view-type must be specified explicitly (1/2/5)")
 	}
 	if opts.GIDs == 0 {
-		return PublishResult{}, output.Err(output.CodeInputInvalid, "gids 不能为空")
+		return PublishResult{}, output.Err(output.CodeInputInvalid, "gids cannot be empty")
 	}
 
 	body := map[string]any{
@@ -580,7 +580,7 @@ func (s *Service) Publish(ctx context.Context, sess session.Session, opts Publis
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
-		return PublishResult{}, output.Err(output.CodeInternal, "构造发布请求失败: %v", err)
+		return PublishResult{}, output.Err(output.CodeInternal, "Failed to build the publish request: %v", err)
 	}
 	raw, oerr := s.Client.Do(ctx, "POST", "/post/api/releasePost/v2", nil, b, headers(sess))
 	if oerr != nil {
@@ -592,14 +592,14 @@ func (s *Service) Publish(ctx context.Context, sess session.Session, opts Publis
 // Delete 删除自己的帖子（operate_type=0，实测删帖原因列表第一类语义）。
 func (s *Service) Delete(ctx context.Context, sess session.Session, postID string) *output.Error {
 	if postID == "" {
-		return output.Err(output.CodeInputInvalid, "post-id 不能为空")
+		return output.Err(output.CodeInputInvalid, "post-id cannot be empty")
 	}
 	b, err := json.Marshal(struct {
 		OperateType int    `json:"operate_type"`
 		PostID      string `json:"post_id"`
 	}{OperateType: 0, PostID: postID})
 	if err != nil {
-		return output.Err(output.CodeInternal, "构造删帖请求失败: %v", err)
+		return output.Err(output.CodeInternal, "Failed to build the delete post request: %v", err)
 	}
 	return s.Client.DoJSON(ctx, "POST", "/post/api/deletePost", nil, b, headers(sess), &struct{}{})
 }

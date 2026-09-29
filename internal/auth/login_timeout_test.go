@@ -37,7 +37,7 @@ func TestLogin_TotalTimeoutIncludesQRSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.HTTP.Transport = slowSetupTransport{}
-	storeDir := privateTestDir(t)
+	storeDir := t.TempDir()
 	st := &store.Store{Dir: storeDir}
 	if err := st.Save(store.NewCredentials(synUID, synMID, synSToken, synDeviceID, synFP, time.Now())); err != nil {
 		t.Fatal(err)
@@ -59,7 +59,7 @@ func TestLoginPassport_TotalTimeoutIncludesQRSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	client.HTTP.Transport = slowSetupTransport{}
-	st := &store.Store{Dir: privateTestDir(t)}
+	st := &store.Store{Dir: t.TempDir()}
 	if err := st.Save(store.NewCredentialsFlow(store.FlowV2, synUID, synMID, synSToken, synDeviceID, synFP, time.Now())); err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +74,7 @@ func TestLoginPassport_TotalTimeoutIncludesQRSetup(t *testing.T) {
 	}
 }
 
-// ---------- 总超时 / 主动取消的分类（修复方案 §3–§6） ----------
+// ---------- 总超时 / 主动取消的分类 ----------
 
 func TestLoginFlowError_Classification(t *testing.T) {
 	timeout := 5 * time.Minute
@@ -98,8 +98,8 @@ func TestLoginFlowError_Classification(t *testing.T) {
 				if !strings.Contains(oerr.Message, "5m0s") {
 					t.Errorf("超时消息应含总时限: %s", oerr.Message)
 				}
-				if strings.Contains(oerr.Message, "已取消") {
-					t.Errorf("超时消息不得混入“已取消”: %s", oerr.Message)
+				if strings.Contains(oerr.Message, "cancelled") {
+					t.Errorf("超时消息不得混入 cancelled: %s", oerr.Message)
 				}
 			}
 		})
@@ -144,7 +144,7 @@ func blockedPollClient(t *testing.T) *api.Client {
 func TestLogin_TimeoutDuringPollRequest(t *testing.T) {
 	// 轮询请求在途时总时限到期：Timeout < RequestTimeout，请求被总时限打断。
 	client := blockedPollClient(t)
-	svc := &Service{Store: &store.Store{Dir: privateTestDir(t)}, QRClient: client, ExClient: client, FPClient: client}
+	svc := &Service{Store: &store.Store{Dir: t.TempDir()}, QRClient: client, ExClient: client, FPClient: client}
 	start := time.Now()
 	_, oerr := svc.Login(context.Background(),
 		Config{Timeout: 120 * time.Millisecond, PollInterval: time.Millisecond, RequestTimeout: 5 * time.Second, MaxPollFails: 3},
@@ -155,8 +155,8 @@ func TestLogin_TimeoutDuringPollRequest(t *testing.T) {
 	if oerr.Exit != output.ExitAuth {
 		t.Errorf("退出码 = %d, want %d", oerr.Exit, output.ExitAuth)
 	}
-	if strings.Contains(oerr.Message, "已取消") {
-		t.Errorf("超时消息不得混入“已取消”: %s", oerr.Message)
+	if strings.Contains(oerr.Message, "cancelled") {
+		t.Errorf("超时消息不得混入 cancelled: %s", oerr.Message)
 	}
 	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("未在总时限附近返回: %s", elapsed)
@@ -165,15 +165,15 @@ func TestLogin_TimeoutDuringPollRequest(t *testing.T) {
 
 func TestLoginPassport_TimeoutDuringPollRequest(t *testing.T) {
 	client := blockedPollClient(t)
-	svc := &Service{Store: &store.Store{Dir: privateTestDir(t)}, FPClient: client, PassportClient: client}
+	svc := &Service{Store: &store.Store{Dir: t.TempDir()}, FPClient: client, PassportClient: client}
 	_, oerr := svc.LoginPassport(context.Background(),
 		Config{Timeout: 120 * time.Millisecond, PollInterval: time.Millisecond, RequestTimeout: 5 * time.Second, MaxPollFails: 3},
 		&fakeRenderer{}, nil)
 	if oerr == nil || oerr.Code != output.CodeLoginTimeout {
 		t.Fatalf("Passport 轮询请求期间超时应 LOGIN_TIMEOUT: %+v", oerr)
 	}
-	if strings.Contains(oerr.Message, "已取消") {
-		t.Errorf("超时消息不得混入“已取消”: %s", oerr.Message)
+	if strings.Contains(oerr.Message, "cancelled") {
+		t.Errorf("超时消息不得混入 cancelled: %s", oerr.Message)
 	}
 }
 
@@ -215,7 +215,7 @@ func TestPassportLogin_Cancel(t *testing.T) {
 	if oerr.Exit != output.ExitInternal {
 		t.Errorf("CANCELLED 退出码 = %d, want %d", oerr.Exit, output.ExitInternal)
 	}
-	if !strings.Contains(oerr.Message, "用户已取消登录") {
+	if !strings.Contains(oerr.Message, "User cancelled login") {
 		t.Errorf("取消文案不符: %s", oerr.Message)
 	}
 }

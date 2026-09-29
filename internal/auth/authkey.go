@@ -4,8 +4,7 @@ package auth
 // auth_appid 声明用途域的派生签名凭据（实测 2026-09-15：auth_appid=csc →
 // rc=0，返回 {sign_type, authkey_ver:1, authkey}）。发布/删帖链路不依赖它。
 //
-// 证据：docs/reference/cnb-mihoyo-api/snapshot/docs/api/
-// ma-cn-passport扫码登录_2026-09-15实测.md §2.3。
+// 上述返回字段来自 2026-09-15 的接口观察。
 
 import (
 	"context"
@@ -42,11 +41,11 @@ type AuthKey struct {
 // 沿用与角色/收藏一致 bbs DS1；Cookie 为 stoken 三件套）。
 func (s *AuthKeyService) Gen(ctx context.Context, sess session.Session, o AuthKeyOptions) (AuthKey, *output.Error) {
 	if s.Client == nil {
-		return AuthKey{}, output.Err(output.CodeInternal, "AuthKeyService.Client 未配置")
+		return AuthKey{}, output.Err(output.CodeInternal, "AuthKeyService.Client is not configured")
 	}
 	if o.AuthAppID == "" || o.GameBiz == "" || o.GameUID == "" || o.Region == "" {
 		return AuthKey{}, output.Err(output.CodeInputInvalid,
-			"auth_appid/game_biz/game_uid/region 均不能为空")
+			"auth_appid/game_biz/game_uid/region must all be non-empty")
 	}
 	b, err := json.Marshal(struct {
 		AuthAppID string `json:"auth_appid"`
@@ -55,7 +54,7 @@ func (s *AuthKeyService) Gen(ctx context.Context, sess session.Session, o AuthKe
 		Region    string `json:"region"`
 	}{AuthAppID: o.AuthAppID, GameBiz: o.GameBiz, GameUID: o.GameUID, Region: o.Region})
 	if err != nil {
-		return AuthKey{}, output.Err(output.CodeInternal, "构造 genAuthKey 请求失败: %v", err)
+		return AuthKey{}, output.Err(output.CodeInternal, "Failed to build the genAuthKey request: %v", err)
 	}
 
 	h := protocol.CommonHeaders(protocol.ClientTypeAndroid, sess.Device())
@@ -71,7 +70,7 @@ func (s *AuthKeyService) Gen(ctx context.Context, sess session.Session, o AuthKe
 		return AuthKey{}, oerr
 	}
 	if data.AuthKey == "" {
-		return AuthKey{}, output.Err(output.CodeRemoteRejected, "genAuthKey 响应缺少 authkey")
+		return AuthKey{}, output.Err(output.CodeRemoteRejected, "genAuthKey response is missing authkey")
 	}
 	return AuthKey{
 		AuthKey:    data.AuthKey,

@@ -1,6 +1,6 @@
 // probe.go 实现视频本地探测：容器识别、时长、codec 与流式 MD5。
 //
-// 设计约束（总体架构 §2）：Go 单二进制分发，不依赖外部 ffprobe；探测只需
+// 设计约束：Go 单二进制分发，不依赖外部 ffprobe；探测只需
 // 提供 getToken 所需的 duration 与上传 preflight 的摘要/大小，因此仅解析
 // MP4/MOV 盒子结构（实抓 Commit SourceInfo：Format=MP4 / Codec=h264）。
 // 其他容器（mkv/avi/ts 等 App 虽可播放）在 CLI 明确报"暂不支持"，不猜测
@@ -80,7 +80,7 @@ func PrepareVideo(ctx context.Context, path string) (*PreparedVideo, *output.Err
 	}
 	f, err := os.Open(path)
 	if err != nil {
-		return fail("无法打开视频文件 %q", path)
+		return fail("Cannot open video file %q", path)
 	}
 	ok := false
 	defer func() {
@@ -91,13 +91,13 @@ func PrepareVideo(ctx context.Context, path string) (*PreparedVideo, *output.Err
 
 	st, err := f.Stat()
 	if err != nil {
-		return fail("无法读取视频文件状态")
+		return fail("Cannot read video file status")
 	}
 	if !st.Mode().IsRegular() {
-		return fail("视频路径不是常规文件: %q", path)
+		return fail("Video path is not a regular file: %q", path)
 	}
 	if st.Size() == 0 {
-		return fail("视频文件为空")
+		return fail("Video file is empty")
 	}
 
 	md5h := md5.New()
@@ -106,7 +106,7 @@ func PrepareVideo(ctx context.Context, path string) (*PreparedVideo, *output.Err
 	var read int64
 	for read < st.Size() {
 		if ctx.Err() != nil {
-			return nil, output.Err(output.CodeCancelled, "已取消")
+			return nil, output.Err(output.CodeCancelled, "Cancelled")
 		}
 		n := int64(len(buf))
 		if remain := st.Size() - read; remain < n {
@@ -114,7 +114,7 @@ func PrepareVideo(ctx context.Context, path string) (*PreparedVideo, *output.Err
 		}
 		got, rerr := f.ReadAt(buf[:n], read)
 		if int64(got) != n || (rerr != nil && rerr != io.EOF) {
-			return fail("读取视频文件不完整（%d/%d 字节），文件可能已变化", got, n)
+			return fail("Video file read incomplete (%d/%d bytes); the file may have changed", got, n)
 		}
 		md5h.Write(buf[:n])
 		shah.Write(buf[:n])
@@ -124,10 +124,10 @@ func PrepareVideo(ctx context.Context, path string) (*PreparedVideo, *output.Err
 	// 准备前后状态核对（早期变化信号；摘要比对才是权威判据）。
 	st2, err := f.Stat()
 	if err != nil {
-		return fail("无法复核视频文件状态")
+		return fail("Cannot re-check video file status")
 	}
 	if st2.Size() != st.Size() || !st2.ModTime().Equal(st.ModTime()) {
-		return fail("视频文件在准备期间发生变化")
+		return fail("Video file changed during preparation")
 	}
 
 	res := ProbeResult{Absolute: path, Size: st.Size(), MD5Hex: hex.EncodeToString(md5h.Sum(nil))}
@@ -168,7 +168,7 @@ func (p *PreparedVideo) Snapshot() (int64, time.Time) { return p.size, p.modTime
 func (p *PreparedVideo) State() (int64, time.Time, *output.Error) {
 	st, err := p.file.Stat()
 	if err != nil {
-		return 0, time.Time{}, output.Err(output.CodeInputInvalid, "无法读取视频文件状态")
+		return 0, time.Time{}, output.Err(output.CodeInputInvalid, "Cannot read video file status")
 	}
 	return st.Size(), st.ModTime(), nil
 }
@@ -232,7 +232,7 @@ func inspectMP4(f *os.File, size int64, res *ProbeResult) *output.Error {
 		}
 		typ, bodyOff, total, err := readBoxHeader(f, off, size)
 		if err != nil {
-			return failf("视频不是有效的 MP4/MOV 结构（%v）", err)
+			return failf("Video is not a valid MP4/MOV structure (%v)", err)
 		}
 		switch typ {
 		case "ftyp":
@@ -243,15 +243,15 @@ func inspectMP4(f *os.File, size int64, res *ProbeResult) *output.Error {
 			moovOff, moovBody = off+bodyOff, total-bodyOff
 		}
 		if total <= 0 {
-			return failf("视频盒子结构损坏")
+			return failf("Video box structure is corrupt")
 		}
 		off += total
 	}
 	if res.Container == "" {
-		return failf("视频缺少 ftyp 盒子，不是 MP4/MOV")
+		return failf("Video is missing the ftyp box; not an MP4/MOV")
 	}
 	if moovBody == 0 {
-		return failf("视频缺少 moov 盒子（可能未完成写入或非普通媒体文件）")
+		return failf("Video is missing the moov box (possibly an incomplete write or not a regular media file)")
 	}
 
 	// 遍历 moov 子盒子：mvhd 取时长，trak 取 codec。
@@ -260,7 +260,7 @@ func inspectMP4(f *os.File, size int64, res *ProbeResult) *output.Error {
 	for off < end {
 		typ, bodyOff, total, err := readBoxHeader(f, off, end)
 		if err != nil {
-			return failf("moov 盒子损坏（%v）", err)
+			return failf("moov box is corrupt (%v)", err)
 		}
 		absBody := off + bodyOff
 		switch typ {
@@ -272,12 +272,12 @@ func inspectMP4(f *os.File, size int64, res *ProbeResult) *output.Error {
 			parseTrak(f, absBody, total-bodyOff, res)
 		}
 		if total <= 0 {
-			return failf("moov 子盒子结构损坏")
+			return failf("moov child box structure is corrupt")
 		}
 		off += total
 	}
 	if res.DurationMS <= 0 {
-		return failf("无法从 mvhd 解析出时长")
+		return failf("Cannot parse the duration from mvhd")
 	}
 	return nil
 }
@@ -294,14 +294,14 @@ func containerOf(brand string) string {
 func parseMVHD(f *os.File, bodyOff int64, res *ProbeResult) *output.Error {
 	vb, err := readAt(f, bodyOff, 1)
 	if err != nil {
-		return output.Err(output.CodeInputInvalid, "mvhd 过短")
+		return output.Err(output.CodeInputInvalid, "mvhd is too short")
 	}
 	switch vb[0] {
 	case 0:
 		// creation(4) modification(4) timescale(4) duration(4)
 		b, err := readAt(f, bodyOff+4, 16)
 		if err != nil {
-			return output.Err(output.CodeInputInvalid, "mvhd v0 过短")
+			return output.Err(output.CodeInputInvalid, "mvhd v0 is too short")
 		}
 		timescale := int64(binary.BigEndian.Uint32(b[8:12]))
 		duration := int64(binary.BigEndian.Uint32(b[12:16]))
@@ -310,13 +310,13 @@ func parseMVHD(f *os.File, bodyOff int64, res *ProbeResult) *output.Error {
 		// creation(8) modification(8) timescale(4) duration(8)
 		b, err := readAt(f, bodyOff+4, 28)
 		if err != nil {
-			return output.Err(output.CodeInputInvalid, "mvhd v1 过短")
+			return output.Err(output.CodeInputInvalid, "mvhd v1 is too short")
 		}
 		timescale := int64(binary.BigEndian.Uint32(b[16:20]))
 		duration := int64(binary.BigEndian.Uint64(b[20:28]))
 		res.DurationMS = msFromUnits(timescale, duration)
 	default:
-		return output.Err(output.CodeInputInvalid, "未知 mvhd 版本 %d", vb[0])
+		return output.Err(output.CodeInputInvalid, "Unknown mvhd version %d", vb[0])
 	}
 	return nil
 }
@@ -426,7 +426,7 @@ func parseStbl(f *os.File, off, size int64, handler string, res *ProbeResult) {
 // size==1 读 64 位 largesize；size==0 表示延伸到 limit（仅顶层合法）。
 func readBoxHeader(r io.ReaderAt, off, limit int64) (typ string, bodyOff int64, total int64, err error) {
 	if off+8 > limit {
-		return "", 0, 0, fmt.Errorf("盒子头越界")
+		return "", 0, 0, fmt.Errorf("box header out of bounds")
 	}
 	h := make([]byte, 8)
 	if _, err := r.ReadAt(h, off); err != nil {
@@ -438,7 +438,7 @@ func readBoxHeader(r io.ReaderAt, off, limit int64) (typ string, bodyOff int64, 
 	switch size {
 	case 1:
 		if off+16 > limit {
-			return "", 0, 0, fmt.Errorf("largesize 越界")
+			return "", 0, 0, fmt.Errorf("largesize out of bounds")
 		}
 		lb := make([]byte, 8)
 		if _, err := r.ReadAt(lb, off+8); err != nil {
@@ -450,7 +450,7 @@ func readBoxHeader(r io.ReaderAt, off, limit int64) (typ string, bodyOff int64, 
 		size = limit - off
 	}
 	if size < bodyOff || off+size > limit {
-		return "", 0, 0, fmt.Errorf("盒子大小 %d 越界", size)
+		return "", 0, 0, fmt.Errorf("box size %d out of bounds", size)
 	}
 	return typ, bodyOff, size, nil
 }

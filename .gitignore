@@ -1,7 +1,9 @@
 # 设计文档与协议证据快照不入库（本地保留）
 docs/
 
-# 构建产物（根目录锚定，避免误伤 cmd/mys/ 源码）
+# 构建产物（根目录锚定，避免误伤 cmd/mys-cli/ 源码）
+/mys-cli
+/mys-cli.exe
 /mys
 /mys.exe
 *.exe
@@ -11,3 +13,6 @@ docs/
 credentials.json
 *.tmp
 .DS_Store
+
+# 环境变量未展开产生的本地产物（勿入库）
+%APPDATA/

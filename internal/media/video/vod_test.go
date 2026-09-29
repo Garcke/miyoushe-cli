@@ -6,6 +6,7 @@ import (
 	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"hash/crc32"
 	"io"
@@ -266,7 +267,7 @@ func TestUploader_RejectsForeignUploadHost(t *testing.T) {
 		CallbackArgs: "cb",
 		Source:       newFakeSource([]byte("data")),
 	})
-	if oerr == nil || !strings.Contains(oerr.Message, "允许集合") {
+	if oerr == nil || !strings.Contains(oerr.Message, "allowed set") {
 		t.Errorf("oerr = %v", oerr)
 	}
 }
@@ -297,6 +298,43 @@ func TestUploader_TransportFailureOnCommitIsUnknown(t *testing.T) {
 	})
 	if oerr == nil || oerr.Code != "REMOTE_RESULT_UNKNOWN" {
 		t.Errorf("oerr = %+v", oerr)
+	}
+}
+
+func TestUploader_PartRejectionDoesNotEchoServerText(t *testing.T) {
+	const serverMessage = "Authorization=Bearer SYNTHETIC-AUTH-SECRET ticket=SYNTHETIC-TICKET-SECRET"
+	const clientHash = "SYNTHETIC-CLIENT-HASH-SECRET"
+	const serverHash = "SYNTHETIC-SERVER-HASH-SECRET"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"code":4030,"message":%q,"data":{"client_hash":%q,"server_hash":%q}}`,
+			serverMessage, clientHash, serverHash)
+	}))
+	defer srv.Close()
+
+	up := NewUploader(Config{
+		HTTP: &http.Client{Transport: &rewriteTransport{
+			mapping: map[string]string{synUploadHost: hostOnly(srv.URL)},
+			base:    http.DefaultTransport,
+		}},
+	})
+	part := []byte("data")
+	oerr := up.transfer(context.Background(), synUploadHost,
+		storeInfo{StoreURI: synStoreURI, Auth: storeAuth}, "synthetic-upload-id", 7, 0,
+		part, crc32.ChecksumIEEE(part))
+	if oerr == nil {
+		t.Fatal("分片失败应返回错误")
+	}
+	if oerr.Code != output.CodeRemoteRejected || oerr.Message != "Part 7 upload rejected: code=4030" {
+		t.Fatalf("unexpected part error: %+v", oerr)
+	}
+	encoded, err := json.Marshal(oerr)
+	if err != nil {
+		t.Fatalf("marshal error: %v", err)
+	}
+	for _, exposed := range []string{"SYNTHETIC-AUTH-SECRET", "SYNTHETIC-TICKET-SECRET", clientHash, serverHash} {
+		if strings.Contains(oerr.Error(), exposed) || bytes.Contains(encoded, []byte(exposed)) {
+			t.Errorf("part error exposed server text %q", exposed)
+		}
 	}
 }
 
@@ -331,7 +369,7 @@ func TestUploader_DefaultHTTPClientRefusesRedirect(t *testing.T) {
 	}
 }
 
-// ---------- V3 §4：主机信任边界与文件完整性 ----------
+// ---------- 主机信任边界与文件完整性 ----------
 
 func TestUploadHostAllowSet(t *testing.T) {
 	allowed := []string{"tob-upload-x-d.volcvod.com"}
@@ -490,7 +528,7 @@ func TestUploader_RefusesRedirectsOnAllRequests(t *testing.T) {
 	}
 }
 
-// ---------- 文件完整性（V3 §4.3） ----------
+// ---------- 文件完整性 ----------
 
 // shortReaderAt 在指定偏移上返回短读（n < len(p)）。
 type shortReaderAt struct {

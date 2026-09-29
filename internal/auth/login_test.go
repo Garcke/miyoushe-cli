@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/md5"
 	"encoding/hex"
@@ -150,6 +151,33 @@ func newTestService(t *testing.T, st *serverState) (*Service, *store.Store, *fak
 
 func fastCfg() Config {
 	return Config{Timeout: 5 * time.Second, PollInterval: time.Millisecond, RequestTimeout: 500 * time.Millisecond, MaxPollFails: 3}
+}
+
+func TestFetchFP_DataMsgDoesNotExposeCredentials(t *testing.T) {
+	const secret = "v2_stoken_synthetic_secret"
+	const ticket = "ticket_synthetic_secret"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"retcode":0,"message":"OK","data":{"code":403,"msg":%q}}`, "stoken="+secret+" ticket="+ticket)
+	}))
+	defer srv.Close()
+	client, err := api.New(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{FPClient: client}
+	_, oerr := svc.fetchFP(context.Background(), synDeviceID)
+	if oerr == nil || oerr.Code != output.CodeRemoteRejected || !strings.Contains(oerr.Message, "403") {
+		t.Fatalf("getFp rejection = %+v", oerr)
+	}
+	var jsonOut bytes.Buffer
+	if err := output.Failure(&jsonOut, oerr); err != nil {
+		t.Fatal(err)
+	}
+	for _, got := range []string{oerr.Error(), jsonOut.String()} {
+		if strings.Contains(got, secret) || strings.Contains(got, ticket) {
+			t.Errorf("data.msg leaked: %s", got)
+		}
+	}
 }
 
 func confirmedRaw() string {
@@ -324,7 +352,7 @@ func TestLogin_PollConsecutiveFailsAborts(t *testing.T) {
 	svc := &Service{Store: sto, FPClient: c, QRClient: c, ExClient: c, Now: time.Now}
 
 	_, oerr := svc.Login(context.Background(), fastCfg(), &fakeRenderer{}, nil)
-	if oerr == nil || !strings.Contains(oerr.Message, "连续失败") {
+	if oerr == nil || !strings.Contains(oerr.Message, "times in a row") {
 		t.Fatalf("连续失败 3 次应中止: %+v", oerr)
 	}
 	if creds, _ := sto.Load(); creds != nil {
@@ -445,11 +473,15 @@ func TestLogin_ScanPayloadMalformed(t *testing.T) {
 }
 
 func TestLogin_UnknownStatFails(t *testing.T) {
-	st := &serverState{queryResps: []string{statResp("Whatever")}, exchResp: exchangeOK}
+	const secret = "ticket_synthetic_secret"
+	st := &serverState{queryResps: []string{statResp("unexpected " + secret)}, exchResp: exchangeOK}
 	svc, _, _ := newTestService(t, st)
 	_, oerr := svc.Login(context.Background(), fastCfg(), &fakeRenderer{}, nil)
-	if oerr == nil || !strings.Contains(oerr.Message, "未知扫码状态") {
+	if oerr == nil || !strings.Contains(oerr.Message, "Unknown QR scan status") {
 		t.Fatalf("未知状态应失败: %+v", oerr)
+	}
+	if strings.Contains(oerr.Error(), secret) {
+		t.Errorf("未知状态回显 ticket: %s", oerr)
 	}
 }
 

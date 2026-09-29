@@ -68,7 +68,7 @@ function verifyBinary(file, version) {
   if (result.status !== 0) {
     throw new Error(`installed binary returned exit code ${result.status}: ${String(result.stderr).trim()}`);
   }
-  if (!String(result.stdout).trim().startsWith(`mys version ${version}`)) {
+  if (!String(result.stdout).trim().startsWith(`mys-cli version ${version}`)) {
     throw new Error(`installed binary version mismatch: ${String(result.stdout).trim()}`);
   }
 }
@@ -132,7 +132,7 @@ export async function install({
   await mkdir(installDir, { recursive: true, mode: 0o755 });
   const destination = platformPath.join(installDir, binaryName(platform));
   const suffix = platform === "win32" ? ".exe" : "";
-  const tempFile = platformPath.join(installDir, `.mys-${process.pid}-${Date.now()}.tmp${suffix}`);
+  const tempFile = platformPath.join(installDir, `.mys-cli-${process.pid}-${Date.now()}.tmp${suffix}`);
   await writeFile(tempFile, binary, { mode: 0o755, flag: "wx" });
   if (platform !== "win32") {
     await chmod(tempFile, 0o755);

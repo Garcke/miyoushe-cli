@@ -24,14 +24,14 @@ func hardenDir(path string) error { return os.Chmod(path, 0o700) }
 func checkFilePrivate(path string) *output.Error {
 	fi, err := os.Lstat(path)
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "检查凭据文件权限失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to check credential file permissions: %v", err)
 	}
 	if isReparsePath(path, fi) {
-		return output.Err(output.CodeStoreTarget, "凭据路径是符号链接，拒绝使用")
+		return output.Err(output.CodeStoreTarget, "Credential path is a symlink; refusing to use")
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		return output.Err(output.CodeStorePermission,
-			"凭据文件权限 %04o 不安全：组/其他用户可访问，请手动改为 0600", perm)
+			"Credential file permissions %04o are unsafe: group/other users can access it; change it to 0600 manually", perm)
 	}
 	return nil
 }
@@ -43,14 +43,14 @@ func checkDirPrivate(dir string) *output.Error {
 		return nil
 	}
 	if err != nil {
-		return output.Err(output.CodeStoreIO, "检查凭据目录权限失败: %v", err)
+		return output.Err(output.CodeStoreIO, "Failed to check credential directory permissions: %v", err)
 	}
 	if isReparsePath(dir, fi) {
-		return output.Err(output.CodeStoreTarget, "凭据目录是符号链接，拒绝使用")
+		return output.Err(output.CodeStoreTarget, "Credential directory is a symlink; refusing to use")
 	}
 	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
 		return output.Err(output.CodeStorePermission,
-			"凭据目录权限 %04o 不安全：组/其他用户可访问，请手动改为 0700", perm)
+			"Credential directory permissions %04o are unsafe: group/other users can access it; change it to 0700 manually", perm)
 	}
 	return nil
 }

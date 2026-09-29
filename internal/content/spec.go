@@ -1,10 +1,9 @@
 // Package content 实现 ContentSpec 的解析、校验与路径解析。
 //
-// 设计来源：docs/architecture/community-features.md §4/§5。解析是确定性的
-// 纯本地转换：不发网络请求、不读文件内容；相对路径以 ContentSpec 文件所在
+// 解析是确定性的纯本地转换：不发网络请求、不读文件内容；相对路径以 ContentSpec 文件所在
 // 目录解析，文件本身的存在性/大小/MIME 校验属于上传与 dry-run 阶段。
 //
-// 解析纪律（§4）：拒绝未知字段、重复 JSON 键、非法 UTF-8、空正文块和
+// 解析纪律：拒绝未知字段、重复 JSON 键、非法 UTF-8、空正文块和
 // kind/block 不匹配；block v1 字段集固定，额外字段一律报错。
 package content
 
@@ -97,10 +96,10 @@ func StringRef(raw, baseDir string) (SourceRef, error) {
 // 相对路径以 baseDir（spec 文件所在目录）为基准。
 func resolveSource(raw, baseDir string) (SourceRef, error) {
 	if strings.TrimSpace(raw) == "" {
-		return SourceRef{}, fmt.Errorf("文件引用为空")
+		return SourceRef{}, fmt.Errorf("File reference is empty")
 	}
 	if strings.Contains(raw, "://") {
-		return SourceRef{}, fmt.Errorf("只接受本地文件引用，不接受远程 URL: %q", raw)
+		return SourceRef{}, fmt.Errorf("Only local file references are accepted, not remote URLs: %q", raw)
 	}
 	if filepath.IsAbs(raw) {
 		return SourceRef{Raw: raw, Absolute: filepath.Clean(raw)}, nil

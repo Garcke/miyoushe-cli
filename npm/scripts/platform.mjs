@@ -32,11 +32,11 @@ export function normalizeVersion(version) {
 export function assetName(version, platform = process.platform, arch = process.arch) {
   const normalized = normalizeVersion(version);
   const target = resolveTarget(platform, arch);
-  return `mys_${normalized}_${target.goos}_${target.goarch}${target.extension}`;
+  return `mys-cli_${normalized}_${target.goos}_${target.goarch}${target.extension}`;
 }
 
 export function binaryName(platform = process.platform) {
-  return platform === "win32" ? "mys.exe" : "mys";
+  return platform === "win32" ? "mys-cli.exe" : "mys-cli";
 }
 
 export function pathForPlatform(platform = process.platform) {

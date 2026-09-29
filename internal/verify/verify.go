@@ -1,6 +1,6 @@
-// Package verify 实现 `mys auth verify`：在线验证社区能力，不打印凭据。
+// Package verify 实现 `mys-cli auth verify`：在线验证社区能力，不打印凭据。
 //
-// 判断依据（社区功能设计 §7）：
+// 判断依据：
 //   - 通过 getUserGameRolesByStoken（已证明无副作用的只读请求）确认
 //     服务端是否接受 SToken 与 protocol profile；
 //   - 能力状态只允许 available / account_denied / not_implemented / unknown；
@@ -59,7 +59,7 @@ func Check(ctx context.Context, sess session.Session, checker RoleChecker) (Repo
 		report.ProtocolProfile = "accepted"
 		report.Capabilities = []CapabilityStatus{
 			{Name: string(session.CapReadAccount), State: StateAvailable,
-				Reason: "getUserGameRolesByStoken 返回 retcode=0"},
+				Reason: "getUserGameRolesByStoken returned retcode=0"},
 			notImplemented(session.CapWritePost),
 			notImplemented(session.CapUploadImage),
 			notImplemented(session.CapUploadVideo),
@@ -69,13 +69,13 @@ func Check(ctx context.Context, sess session.Session, checker RoleChecker) (Repo
 		report.ServerAccepted = false
 		report.Capabilities = []CapabilityStatus{
 			{Name: string(session.CapReadAccount), State: StateUnknown,
-				Reason: "服务端拒绝当前会话"},
+				Reason: "Server rejected the current session"},
 		}
 		return report, oerr
 	case oerr.Code == output.CodeProtocolRejected:
 		report.Capabilities = []CapabilityStatus{
 			{Name: string(session.CapReadAccount), State: StateUnknown,
-				Reason: "protocol profile 被网关拒绝"},
+				Reason: "protocol profile rejected by the gateway"},
 		}
 		return report, oerr
 	case oerr.Retcode == 1001:
@@ -84,7 +84,7 @@ func Check(ctx context.Context, sess session.Session, checker RoleChecker) (Repo
 		report.ProtocolProfile = "accepted"
 		report.Capabilities = []CapabilityStatus{
 			{Name: string(session.CapReadAccount), State: StateAccountDenied,
-				Reason: "接口返回权限不足（retcode=1001）"},
+				Reason: "Endpoint returned permission denied (retcode=1001)"},
 			notImplemented(session.CapWritePost),
 			notImplemented(session.CapUploadImage),
 			notImplemented(session.CapUploadVideo),
@@ -103,6 +103,6 @@ func notImplemented(cap session.Capability) CapabilityStatus {
 	return CapabilityStatus{
 		Name:   string(cap),
 		State:  StateNotImplemented,
-		Reason: "适配器未达到 adapter_ready 门禁（缺脱敏 fixture 与契约测试）",
+		Reason: "Adapter has not reached the adapter_ready gate (missing sanitized fixture and contract tests)",
 	}
 }

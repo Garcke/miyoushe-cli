@@ -90,9 +90,10 @@ func TestDraftList_CrossBucketSortDedupeTruncate(t *testing.T) {
 				{"draft_id":"b2","subject":"桶2","view_type":2,"updated_at":300},
 				{"draft_id":"b3","subject":"桶2b","view_type":2,"updated_at":200}],"is_last":true}}`)
 		default:
-			// 桶 5 中 b2 重复出现（跨桶去重契约），另有 b4 更新时间最早。
+			// 桶 5 中 b2 重复出现（跨桶去重契约）：该响应不含 view_type，
+			// 与服务端非零值不构成冲突。
 			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
-				{"draft_id":"b2","subject":"重复b2","view_type":5,"updated_at":999},
+				{"draft_id":"b2","subject":"重复b2","updated_at":999},
 				{"draft_id":"b4","subject":"桶5","view_type":5,"updated_at":50}],"is_last":true}}`)
 		}
 	}))
@@ -111,6 +112,27 @@ func TestDraftList_CrossBucketSortDedupeTruncate(t *testing.T) {
 		t.Fatalf("items = %+v", page.Items)
 	}
 	for _, it := range page.Items {
+		if it.DraftID == "b2" {
+			// 唯一非零服务端值（2）生效，来源为 response。
+			if it.EffectiveViewType == nil || *it.EffectiveViewType != 2 || it.ViewTypeSource != TypeSourceResponse {
+				t.Errorf("b2 effective type = %+v", it)
+			}
+			if it.ContentType != "image_text_post" {
+				t.Errorf("b2 content type = %s", it.ContentType)
+			}
+		}
+		if it.DraftID == "b4" {
+			// 桶 5 明确返回非零值 5 → response。
+			if it.EffectiveViewType == nil || *it.EffectiveViewType != 5 || it.ViewTypeSource != TypeSourceResponse {
+				t.Errorf("b4 effective type = %+v", it)
+			}
+		}
+		if it.DraftID == "b1" {
+			// 桶 1 明确返回 1。
+			if it.EffectiveViewType == nil || *it.EffectiveViewType != 1 {
+				t.Errorf("b1 effective type = %+v", it)
+			}
+		}
 		if it.DraftID == "b2" && it.Subject == "重复b2" {
 			t.Error("跨桶重复 draft_id 未去重（应保留首次出现的桶2条目）")
 		}
@@ -122,7 +144,7 @@ func TestDraftList_CrossBucketSortDedupeTruncate(t *testing.T) {
 	if page.NextCursor != "" {
 		t.Errorf("跨桶预览不应返回全局游标: %q", page.NextCursor)
 	}
-	if len(page.Warnings) == 0 || !strings.Contains(page.Warnings[0], "不能续页") {
+	if len(page.Warnings) == 0 || !strings.Contains(page.Warnings[0], "cannot paginate") {
 		t.Errorf("截断/有更多时应提示预览不能续页: %v", page.Warnings)
 	}
 }
@@ -169,8 +191,36 @@ func TestDraftList_SingleBucketLimitContinuity(t *testing.T) {
 	}
 }
 
+func TestDraftList_CrossBucketConflictIsProtocolMismatch(t *testing.T) {
+	// 同一 ID 在桶 2 与桶 5 都返回非零但不同的 view_type：
+	// 不按遍历顺序任选，返回 PROTOCOL_MISMATCH 并携带已规范化 partial data。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("view_type") {
+		case "2":
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+				{"draft_id":"ok1","subject":"正常","view_type":2,"updated_at":200},
+				{"draft_id":"bad","subject":"冲突","view_type":2,"updated_at":100}],"is_last":true}}`)
+		default:
+			fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[
+				{"draft_id":"bad","subject":"冲突","view_type":5,"updated_at":100}],"is_last":true}}`)
+		}
+	}))
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	_, oerr := New(c).List(context.Background(), testSess(), ListOptions{Limit: 10})
+	if oerr == nil || oerr.Code != output.CodeProtocolMismatch {
+		t.Fatalf("冲突类型应 PROTOCOL_MISMATCH: %v", oerr)
+	}
+	if oerr.PartialData == nil {
+		t.Error("冲突应携带已规范化的 partial data")
+	}
+	if _, ok := oerr.Context["draft_id"]; !ok {
+		t.Errorf("错误上下文应含脱敏 draft_id: %+v", oerr.Context)
+	}
+}
+
 func TestDraftGet_NestedPost(t *testing.T) {
-	// 2026-09-15 实测 §4.1：帖子本体在 data.draft.post（双层结构）。
+	// 2026-09-15 实测：帖子本体在 data.draft.post（双层结构）。
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/post/api/draft/detail" {
 			t.Errorf("path = %s", r.URL.Path)
@@ -210,7 +260,7 @@ func TestDraftGet_FlatFallback(t *testing.T) {
 	}
 }
 
-// ---------- V3 §5.2：草稿详情包装层与正文变体 ----------
+// ---------- 草稿详情包装层与正文变体 ----------
 
 func TestDraftGet_OuterDraftIDFallback(t *testing.T) {
 	// 内层 post 缺 draft_id 时使用外层 data.draft_id。

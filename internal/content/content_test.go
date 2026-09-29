@@ -1,7 +1,6 @@
 package content
 
 import (
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -69,39 +68,39 @@ func TestParse_ErrorCases(t *testing.T) {
 		wantMsg string
 	}{
 		{"video 缺封面", `{"schema_version":1,"kind":"video","gids":8,"forum_id":57,"subject":"t",
-			"blocks":[{"type":"video","path":"a.mp4"}]}`, "缺少 cover"},
+			"blocks":[{"type":"video","path":"a.mp4"}]}`, "missing cover"},
 		{"video 两个视频块", `{"schema_version":1,"kind":"video","gids":8,"forum_id":57,"subject":"t",
-			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"},{"type":"video","path":"b.mp4","cover":"c.png"}]}`, "恰好一个"},
+			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"},{"type":"video","path":"b.mp4","cover":"c.png"}]}`, "exactly one"},
 		{"video 零视频块", `{"schema_version":1,"kind":"video","gids":8,"forum_id":57,"subject":"t",
-			"blocks":[{"type":"text","text":"hi"}]}`, "恰好一个"},
+			"blocks":[{"type":"text","text":"hi"}]}`, "exactly one"},
 		{"image kind 带 video 块", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
-			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "不允许 video 块"},
+			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "does not allow a video block"},
 		{"article kind 带 video 块", `{"schema_version":1,"kind":"article","gids":8,"forum_id":57,"subject":"t",
-			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "不允许 video 块"},
+			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "does not allow a video block"},
 		{"image kind 顶层 cover", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,"cover":"c.png",
-			"blocks":[{"type":"text","text":"hi"}]}`, "不允许设置顶层 cover"},
+			"blocks":[{"type":"text","text":"hi"}]}`, "does not allow a top-level cover"},
 		{"video kind 顶层 cover", `{"schema_version":1,"kind":"video","gids":8,"forum_id":57,"subject":"t","cover":"c.png",
-			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "不允许设置顶层 cover"},
+			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "does not allow a top-level cover"},
 		{"video 缺标题", `{"schema_version":1,"kind":"video","gids":8,"forum_id":57,
-			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "非空 subject"},
+			"blocks":[{"type":"video","path":"a.mp4","cover":"c.png"}]}`, "non-empty subject"},
 		{"article 缺标题", `{"schema_version":1,"kind":"article","gids":8,"forum_id":57,
-			"blocks":[{"type":"text","text":"hi"}]}`, "非空 subject"},
+			"blocks":[{"type":"text","text":"hi"}]}`, "non-empty subject"},
 		{"article 无 text 块", `{"schema_version":1,"kind":"article","gids":8,"forum_id":57,"subject":"t",
-			"blocks":[{"type":"image","path":"a.png"}]}`, "至少需要一个 text 块"},
-		{"image 零块", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,"blocks":[]}`, "至少需要一个"},
+			"blocks":[{"type":"image","path":"a.png"}]}`, "at least one text block"},
+		{"image 零块", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,"blocks":[]}`, "at least one"},
 		{"未知字段", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,"blocks":[{"type":"text","text":"hi"}],"hack":1}`, "unknown field"},
 		{"块未知字段", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
 			"blocks":[{"type":"text","text":"hi","extra":1}]}`, "unknown field"},
 		{"重复键", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
-			"blocks":[{"type":"text","text":"hi"}],"kind":"video"}`, "重复的 JSON 键"},
+			"blocks":[{"type":"text","text":"hi"}],"kind":"video"}`, "duplicate JSON key"},
 		{"块内重复键", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
-			"blocks":[{"type":"text","text":"a","text":"b"}]}`, "重复的 JSON 键"},
+			"blocks":[{"type":"text","text":"a","text":"b"}]}`, "duplicate JSON key"},
 		{"空 text 块", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
-			"blocks":[{"type":"text","text":"  "}]}`, "不能为空"},
+			"blocks":[{"type":"text","text":"  "}]}`, "cannot be empty"},
 		{"未知块类型", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
-			"blocks":[{"type":"audio","path":"a.mp3"}]}`, "未知块类型"},
+			"blocks":[{"type":"audio","path":"a.mp3"}]}`, "unknown block type"},
 		{"远程 URL", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
-			"blocks":[{"type":"image","path":"https://example.com/a.png"}]}`, "本地文件"},
+			"blocks":[{"type":"image","path":"https://example.com/a.png"}]}`, "Only local file references"},
 		{"schema_version 过新", `{"schema_version":2,"kind":"image","gids":8,"forum_id":57,
 			"blocks":[{"type":"text","text":"hi"}]}`, "schema_version"},
 		{"缺 gids", `{"schema_version":1,"kind":"image","forum_id":57,
@@ -109,10 +108,10 @@ func TestParse_ErrorCases(t *testing.T) {
 		{"缺 forum_id", `{"schema_version":1,"kind":"image","gids":8,
 			"blocks":[{"type":"text","text":"hi"}]}`, "forum_id"},
 		{"未知 kind", `{"schema_version":1,"kind":"poll","gids":8,"forum_id":57,
-			"blocks":[{"type":"text","text":"hi"}]}`, "未知 kind"},
+			"blocks":[{"type":"text","text":"hi"}]}`, "Unknown kind"},
 		{"缺 blocks", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57}`, "blocks"},
 		{"空 topics id", `{"schema_version":1,"kind":"image","gids":8,"forum_id":57,
-			"blocks":[{"type":"text","text":"hi"}],"topics":[{"id":" "}]}`, "空 id"},
+			"blocks":[{"type":"text","text":"hi"}],"topics":[{"id":" "}]}`, "empty id"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -138,21 +137,20 @@ func TestParse_NonUTF8AndBOM(t *testing.T) {
 }
 
 func TestParse_AbsolutePathAndArticleCover(t *testing.T) {
-	cover := filepath.Join(t.TempDir(), "cover.jpg")
-	specJSON := fmt.Sprintf(`{
+	specJSON := `{
 		"schema_version": 1,
 		"kind": "article",
 		"gids": 9,
 		"forum_id": 47,
 		"subject": "长文",
-		"cover": %q,
+		"cover": "C:/imgs/cover.jpg",
 		"blocks": [{"type": "text", "text": "正文"}]
-	}`, cover)
+	}`
 	spec, oerr := Parse([]byte(specJSON), "/base")
 	if oerr != nil {
 		t.Fatalf("Parse: %v", oerr)
 	}
-	if spec.Cover == nil || spec.Cover.Absolute != filepath.Clean(cover) {
+	if spec.Cover == nil || spec.Cover.Absolute != `C:\imgs\cover.jpg` {
 		t.Errorf("cover = %+v", spec.Cover)
 	}
 }

@@ -66,7 +66,7 @@ func TestDiscussion_Parsed(t *testing.T) {
 	if d.Subject != "旅行者讨论区" || len(d.Forums) != 1 || d.Forums[0].ID.String() != "26" {
 		t.Errorf("discussion = %+v", d)
 	}
-	// V3 §5.1：分区模型包含 name；命令层对缺失显示“未提供”。
+	// 分区模型包含 name；命令层对缺失显示“未提供”。
 	if d.Forums[0].Name != "酒馆" || d.Forums[0].Des == "" {
 		t.Errorf("分区 name/des 解析: %+v", d.Forums[0])
 	}
@@ -168,4 +168,53 @@ func TestForumPosts_InputValidation(t *testing.T) {
 
 func parseQuery(q string) (url.Values, error) {
 	return url.ParseQuery(q)
+}
+
+func TestImageTypes_AndImagePosts(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/forum/api/getImagePostListType", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("forum_id") != "29" || q.Get("gids") != "2" {
+			t.Errorf("types query = %s", r.URL.RawQuery)
+		}
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"list":[1,2,3]}}`)
+	})
+	mux.HandleFunc("/post/api/getImagePostList", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("forum_id") != "29" || q.Get("gids") != "2" || q.Get("type") != "1" {
+			t.Errorf("posts query = %s", r.URL.RawQuery)
+		}
+		if r.Header.Get("DS") == "" || r.Header.Get("Cookie") == "" {
+			t.Error("图片榜单应携带 DS 与 Cookie")
+		}
+		fmt.Fprint(w, `{"retcode":0,"message":"OK","data":{"title":"同人榜","list":[
+			{"post":{"post_id":"78350278","subject":"【荧四格】1129","view_type":2,"images":[{"url":"https://x/a.jpg"}]}}
+		],"last_id":"9","is_last":false}}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	c, _ := api.New(srv.URL)
+	s := New(c, session.Session{UID: "u", MID: "m", Stoken: "v2_t", DeviceID: "d", DeviceFP: "f"})
+
+	types, oerr := s.ImageTypes(context.Background(), "2", "29")
+	if oerr != nil || len(types) != 3 || types[0] != 1 {
+		t.Fatalf("ImageTypes: %v %v", types, oerr)
+	}
+	page, oerr := s.ImagePosts(context.Background(), ImagePostsOptions{ForumID: "29", GIDs: "2", Type: "1"})
+	if oerr != nil {
+		t.Fatalf("ImagePosts: %v", oerr)
+	}
+	if page.Title != "同人榜" || len(page.Items) != 1 || page.Items[0].PostID != "78350278" {
+		t.Errorf("page = %+v", page)
+	}
+	if !page.HasMore || page.NextCursor != "9" {
+		t.Errorf("分页: hasMore=%v cursor=%q", page.HasMore, page.NextCursor)
+	}
+	// 输入校验
+	if _, oerr := s.ImageTypes(context.Background(), "", "29"); oerr == nil {
+		t.Error("缺 gids 应拒绝")
+	}
+	if _, oerr := s.ImagePosts(context.Background(), ImagePostsOptions{ForumID: "29"}); oerr == nil {
+		t.Error("缺 gids 应拒绝")
+	}
 }

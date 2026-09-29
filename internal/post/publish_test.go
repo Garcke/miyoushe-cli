@@ -69,7 +69,7 @@ func TestPublish_Success(t *testing.T) {
 	if err := json.Unmarshal([]byte(st.releaseBody), &body); err != nil {
 		t.Fatalf("body 非法: %v", err)
 	}
-	// 契约锁定（实测 §4）：完整 18 字段形态。
+	// 契约锁定：完整 18 字段形态。
 	for _, k := range []string{"is_original", "subject", "gids", "contribution_act", "f_forum_id",
 		"uid", "topic_ids", "review_id", "is_profit", "is_pre_publication", "cover", "lottery",
 		"forum_id", "draft_id", "structured_content", "link_card_ids", "view_type", "content"} {
@@ -122,7 +122,7 @@ func TestPublish_UnknownShapeFails(t *testing.T) {
 	_, oerr := s.Publish(context.Background(), session.Session{
 		UID: "u", MID: "m", Stoken: "s", DeviceID: "d", DeviceFP: "f",
 	}, PublishOptions{Subject: "t", ContentHTML: "x", StructuredContent: "[]", ForumID: "1", GIDs: 2, ViewType: 1})
-	if oerr == nil || !strings.Contains(oerr.Message, "结果未知") {
+	if oerr == nil || !strings.Contains(oerr.Message, "result unknown") {
 		t.Fatalf("无 post_id 且无门槛信息应报结果未知: %+v", oerr)
 	}
 }

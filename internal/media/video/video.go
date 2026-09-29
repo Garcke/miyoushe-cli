@@ -55,10 +55,10 @@ func (p *PreUpload) VideoDurationMS() int64 {
 func ParseUploadToken(token string) (STSCredential, *output.Error) {
 	var cred STSCredential
 	if err := json.Unmarshal([]byte(token), &cred); err != nil {
-		return STSCredential{}, output.Err(output.CodeRemoteRejected, "token 字段结构不符")
+		return STSCredential{}, output.Err(output.CodeRemoteRejected, "token field structure does not match")
 	}
 	if cred.AccessKeyID == "" || cred.SecretAccessKey == "" || cred.SessionToken == "" {
-		return STSCredential{}, output.Err(output.CodeRemoteRejected, "token 缺少必要凭据字段")
+		return STSCredential{}, output.Err(output.CodeRemoteRejected, "token is missing required credential fields")
 	}
 	return cred, nil
 }
@@ -141,7 +141,7 @@ func headers(sess session.Session) http.Header {
 // 上传层（实抓样本背书）。
 func (s *Service) IsExist(ctx context.Context, sess session.Session, md5 string, scene int) (*PreUpload, *output.Error) {
 	if md5 == "" {
-		return nil, output.Err(output.CodeInputInvalid, "md5 不能为空")
+		return nil, output.Err(output.CodeInputInvalid, "md5 cannot be empty")
 	}
 	q := url.Values{}
 	q.Set("md5", md5)
@@ -159,10 +159,10 @@ func (s *Service) IsExist(ctx context.Context, sess session.Session, md5 string,
 // 未命中秒传时 data 只含 token 与 callback_args。
 func (s *Service) GetUploadToken(ctx context.Context, sess session.Session, md5 string, sizeBytes, durationMS int64, name string) (*PreUpload, *output.Error) {
 	if md5 == "" {
-		return nil, output.Err(output.CodeInputInvalid, "md5 不能为空")
+		return nil, output.Err(output.CodeInputInvalid, "md5 cannot be empty")
 	}
 	if sizeBytes <= 0 {
-		return nil, output.Err(output.CodeInputInvalid, "文件大小无效")
+		return nil, output.Err(output.CodeInputInvalid, "File size is invalid")
 	}
 	q := url.Values{}
 	q.Set("size", fmt.Sprintf("%d", sizeBytes))
@@ -179,7 +179,7 @@ func (s *Service) GetUploadToken(ctx context.Context, sess session.Session, md5 
 }
 
 // retcodeUploadCallbackPending 是 Commit 后异步回调未完成时 getVideoID
-// 返回的明确状态；只对它做有界退避重试（ARCHITECTURE-V2 §8.2），
+// 返回的明确状态；只对它做有界退避重试，
 // 其它错误不泛化为“等等就好”。
 const retcodeUploadCallbackPending = 16006
 
@@ -191,7 +191,7 @@ const getVideoIDMaxPollAttempts = 5
 // 登记并换取米游社 video_id。返回 video_id 与服务端确认的时长（毫秒）。
 func (s *Service) GetVideoID(ctx context.Context, sess session.Session, fileID, md5 string) (string, int64, *output.Error) {
 	if fileID == "" || md5 == "" {
-		return "", 0, output.Err(output.CodeInputInvalid, "file_id 与 md5 不能为空")
+		return "", 0, output.Err(output.CodeInputInvalid, "file_id and md5 cannot be empty")
 	}
 	q := url.Values{}
 	q.Set("file_id", fileID)
@@ -209,13 +209,13 @@ func (s *Service) GetVideoID(ctx context.Context, sess session.Session, fileID, 
 			return "", 0, oerr
 		}
 		if !sleepBackoff(ctx, backoff) {
-			return "", 0, output.Err(output.CodeCancelled, "已取消")
+			return "", 0, output.Err(output.CodeCancelled, "Cancelled")
 		}
 		backoff *= 2
 	}
 	vid := string(data.VideoID)
 	if vid == "" {
-		return "", 0, output.Err(output.CodeRemoteRejected, "getVideoID 未返回 video_id")
+		return "", 0, output.Err(output.CodeRemoteRejected, "getVideoID did not return video_id")
 	}
 	return vid, data.VideoDurationMS(), nil
 }
@@ -235,7 +235,7 @@ func sleepBackoff(ctx context.Context, d time.Duration) bool {
 // UpdateCover 设置视频封面。body 为 {"video_id","cover_url"}。
 func (s *Service) UpdateCover(ctx context.Context, sess session.Session, videoID, coverURL string) *output.Error {
 	if videoID == "" || coverURL == "" {
-		return output.Err(output.CodeInputInvalid, "video_id 与 cover_url 不能为空")
+		return output.Err(output.CodeInputInvalid, "video_id and cover_url cannot be empty")
 	}
 	body, _ := json.Marshal(struct {
 		VideoID  string `json:"video_id"`

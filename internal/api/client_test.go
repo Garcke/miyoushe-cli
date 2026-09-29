@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -69,6 +70,37 @@ func TestDo_RetcodeErrors(t *testing.T) {
 	}
 }
 
+func TestDo_RemoteMessageDoesNotExposeCredentials(t *testing.T) {
+	const secret = "v2_stoken_synthetic_secret"
+	const ticket = "ticket_synthetic_secret"
+	for _, rc := range []int{-100, -10001, -3005} {
+		t.Run(fmt.Sprint(rc), func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				fmt.Fprint(w, envJSON(rc, "rejected stoken="+secret+" ticket="+ticket, `null`))
+			}))
+			defer srv.Close()
+			c, _ := New(srv.URL)
+			_, oerr := c.Do(context.Background(), "GET", "/x", nil, nil, http.Header{})
+			if oerr == nil || oerr.Retcode != rc {
+				t.Fatalf("retcode = %+v, want %d", oerr, rc)
+			}
+			var jsonOut bytes.Buffer
+			if err := output.Failure(&jsonOut, oerr); err != nil {
+				t.Fatal(err)
+			}
+			for _, got := range []string{oerr.Error(), jsonOut.String()} {
+				if strings.Contains(got, secret) || strings.Contains(got, ticket) {
+					t.Errorf("remote message leaked: %s", got)
+				}
+			}
+			if !strings.Contains(jsonOut.String(), fmt.Sprintf(`"remote_code":%d`, rc)) ||
+				!strings.Contains(jsonOut.String(), `"remote_message":null`) {
+				t.Errorf("remote error fields = %s", jsonOut.String())
+			}
+		})
+	}
+}
+
 func TestDo_MissingRetcode(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"message":"OK","data":{}}`)
@@ -91,7 +123,7 @@ func TestDo_Oversize(t *testing.T) {
 	defer srv.Close()
 	c, _ := New(srv.URL)
 	if _, oerr := c.Do(context.Background(), "GET", "/x", nil, nil, http.Header{}); oerr == nil ||
-		!strings.Contains(oerr.Message, "上限") {
+		!strings.Contains(oerr.Message, "byte limit") {
 		t.Fatalf("超大响应应失败: %v", oerr)
 	}
 }

@@ -1,7 +1,7 @@
 // Package protocol 固定米游社 App 协议剖面：App 版本、DS 算法、
 // 公共 x-rpc 头与 host 白名单。认证状态机只保留 passport/二维码专用逻辑。
 //
-// 证据来源（docs/reference/cnb-mihoyo-api 快照）：
+// 协议观察：
 //   - DS1（client_type=2/4，"bbs DS"）：md5("salt={s}&t={t}&r={r}")，
 //     t 秒级，r 为 6 位 [0-9a-z]；salt 随 App 版本轮换（2.114.0 = SaltBBS）。
 //   - passport DS（ma-cn-passport / ma-cn-session 域）：
@@ -49,6 +49,10 @@ const (
 	// DS 盐。SaltBBS 随 App 版本轮换（2.114.0）；SaltPassport 硬编码于 SDK。
 	SaltBBS      = "d64014da690671f8704695e993130f4c"
 	SaltPassport = "JwYDpKvLj6MrMqqYU6jTKF17KNO2PXoS"
+
+	// SaltWeb4X 是 client_type=5（Web/LToken 路线，如便签/战绩）的 DS2 盐；
+	// 版本无关、长期不变（DS_CAPTURE_RECORD 已录）。
+	SaltWeb4X = "xV8v4Qu54lUKrEYFZkJhB8cuOh9Asafs"
 )
 
 // x-rpc-client_type 取值。
@@ -95,8 +99,19 @@ func DSBBSHeader(salt string, t int64, r string) string {
 
 // DSPassportHeader 按给定 t、r、body 构造 passport DS 头，供测试锁定。
 func DSPassportHeader(salt string, t int64, r, body string) string {
+	return DSHeader(salt, t, r, body, "")
+}
+
+// DSHeader 按给定 t、r、body、query 构造 DS 头（DS2 变体：query 参与签名）。
+// query 必须与实际发送的 query 字符串完全一致。
+func DSHeader(salt string, t int64, r, body, query string) string {
 	ts := strconv.FormatInt(t, 10)
-	return ts + "," + r + "," + dsSigPassport(salt, ts, r, body, "")
+	return ts + "," + r + "," + dsSigPassport(salt, ts, r, body, query)
+}
+
+// NewDS2X4 生成 client_type=5 路线的 DS 头（4X 盐 + query 绑定）。
+func NewDS2X4(query string) string {
+	return DSHeader(SaltWeb4X, time.Now().Unix(), randomString(6, dsRSAlphabetX), "", query)
 }
 
 func randomString(n int, alphabet string) string {
@@ -106,7 +121,7 @@ func randomString(n int, alphabet string) string {
 		v, err := rand.Int(rand.Reader, max)
 		if err != nil {
 			// crypto/rand 失败属于不可恢复环境错误。
-			panic("protocol: crypto/rand 不可用: " + err.Error())
+			panic("protocol: crypto/rand unavailable: " + err.Error())
 		}
 		out[i] = alphabet[v.Int64()]
 	}

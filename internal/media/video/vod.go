@@ -1,8 +1,7 @@
 // vod.go 实现火山 VOD 直传状态机：ApplyUploadInfo → /upload/v1 part
 // transfer → finish → CommitUploadInfo。
 //
-// 协议要点（全部有 2026-09-11 实抓样本背书，见
-// docs/architecture/video-upload-protocol.md §8）：
+// 协议要点（依据 2026-09-11 的接口观察）：
 //   - Apply/Commit 走 vod.volcengineapi.com，SigV4 签名（service=vod）；
 //   - 直传 Authorization 为 Apply 下发的 StoreInfos[0].Auth（SpaceKey
 //     JWT）原样，不做 SigV4；
@@ -40,7 +39,7 @@ const (
 
 // DefaultUploadHosts 是生产放行的直传主机**精确集合**（仅已实测主机）。
 // 不再使用后缀匹配：`evil.example#x.volcvod.com` 之类字符串能通过后缀检查，
-// 但 URL 解析后的真实网络主机是 `evil.example`（ARCHITECTURE-V3 §4.2）。
+// 但 URL 解析后的真实网络主机是 `evil.example`。
 // 若真实 Apply 响应出现新主机，先失败关闭并记录脱敏证据，审阅后再更新集合。
 var DefaultUploadHosts = []string{"tob-upload-x-d.volcvod.com"}
 
@@ -66,7 +65,7 @@ type Config struct {
 	// HTTP 客户端；零值时使用带超时的默认客户端。
 	HTTP *http.Client
 	// AllowedUploadHosts 覆盖允许的直传主机精确集合；仅测试注入，
-	// 不对用户暴露为可配置项（V3 §4.2）。
+	// 不对用户暴露为可配置项。
 	AllowedUploadHosts []string
 }
 
@@ -87,7 +86,7 @@ func NewUploader(cfg Config) *Uploader {
 		cfg.HTTP = &http.Client{Timeout: 60 * time.Second}
 	}
 	// 即使注入的客户端默认会跟随 3xx，签名/STS/SpaceKey 授权也不得被带往
-	// 第二个主机（V3 §4.2 第 4 条）：统一包一层禁重定向副本。
+	// 第二个主机：统一包一层禁重定向副本。
 	cfg.HTTP = withoutRedirects(cfg.HTTP)
 	if len(cfg.AllowedUploadHosts) == 0 {
 		cfg.AllowedUploadHosts = DefaultUploadHosts
@@ -152,16 +151,12 @@ type applyResponse struct {
 
 // tosEnvelope 是 /upload/v1 的响应 envelope，code=2000 为成功。
 type tosEnvelope struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-	Data    struct {
+	Code int `json:"code"`
+	Data struct {
 		UploadID   string `json:"uploadid"`
 		PartNumber string `json:"part_number"`
 		CRC32      string `json:"crc32"`
 		Hash       string `json:"hash"`
-		// 部分失败响应携带客户端/服务端摘要（如 Mismatch CRC32）。
-		ClientHash string `json:"client_hash"`
-		ServerHash string `json:"server_hash"`
 	} `json:"data"`
 }
 
@@ -180,30 +175,30 @@ type commitResponse struct {
 // （媒体已在 TOS，但登记结果未知，不自动重试）。
 func (u *Uploader) Upload(ctx context.Context, in Input) (string, *output.Error) {
 	if in.Credential.AccessKeyID == "" || in.Credential.SecretAccessKey == "" || in.Credential.SessionToken == "" {
-		return "", output.Err(output.CodeInputInvalid, "上传凭据不完整")
+		return "", output.Err(output.CodeInputInvalid, "Upload credential is incomplete")
 	}
 	if in.Source == nil {
-		return "", output.Err(output.CodeInputInvalid, "缺少已准备视频源（必须先完成 PrepareVideo）")
+		return "", output.Err(output.CodeInputInvalid, "Prepared video source is missing (PrepareVideo must complete first)")
 	}
 	size := in.Source.Size()
 	if size <= 0 {
-		return "", output.Err(output.CodeInputInvalid, "上传内容无效")
+		return "", output.Err(output.CodeInputInvalid, "Upload content is invalid")
 	}
 	// 必须携带准备阶段的 SHA-256 基线；缺基线不接受重新建立。
 	expected := in.Source.SHA256()
 	if len(expected) != sha256.Size {
-		return "", output.Err(output.CodeInputInvalid, "来源缺少准备阶段 SHA-256 基线，拒绝上传")
+		return "", output.Err(output.CodeInputInvalid, "Source is missing the preparation-phase SHA-256 baseline; refusing to upload")
 	}
 	if in.CallbackArgs == "" {
-		return "", output.Err(output.CodeInputInvalid, "callback_args 缺失")
+		return "", output.Err(output.CodeInputInvalid, "callback_args is missing")
 	}
 	reader := in.Source.ReaderAt()
 	if reader == nil {
-		return "", output.Err(output.CodeInputInvalid, "来源缺少可读句柄")
+		return "", output.Err(output.CodeInputInvalid, "Source is missing a readable handle")
 	}
 
 	// 上传前复核文件状态（大小/修改时间；早期变化信号）。
-	if oerr := checkSourceState(in.Source, "上传前"); oerr != nil {
+	if oerr := checkSourceState(in.Source, "before upload"); oerr != nil {
 		return "", oerr
 	}
 
@@ -221,7 +216,7 @@ func (u *Uploader) Upload(ctx context.Context, in Input) (string, *output.Error)
 	}
 	if !bytes.Equal(preHash, expected) {
 		return "", output.Err(output.CodeContentConflict,
-			"文件内容与准备阶段摘要不符（SHA-256 不一致），已停止上传，未发送任何分片")
+			"File content does not match the preparation digest (SHA-256 mismatch); upload stopped, no part was sent")
 	}
 	upHash := sha256.New()
 
@@ -231,12 +226,12 @@ func (u *Uploader) Upload(ctx context.Context, in Input) (string, *output.Error)
 	}
 	addr := apply.Result.Data.UploadAddress
 	if len(addr.StoreInfos) == 0 || len(addr.UploadHosts) == 0 {
-		return "", output.Err(output.CodeRemoteRejected, "Apply 响应缺少 StoreInfos 或 UploadHosts")
+		return "", output.Err(output.CodeRemoteRejected, "Apply response is missing StoreInfos or UploadHosts")
 	}
 	store := addr.StoreInfos[0]
 	uploadHost, ok := normalizeUploadHost(addr.UploadHosts[0])
 	if !ok || !hostAllowed(uploadHost, u.Config.AllowedUploadHosts) {
-		return "", output.Err(output.CodeRemoteRejected, "Apply 返回的上传主机不在允许集合内")
+		return "", output.Err(output.CodeRemoteRejected, "Upload host returned by Apply is not in the allowed set")
 	}
 
 	// 分片直传。
@@ -253,9 +248,9 @@ func (u *Uploader) Upload(ctx context.Context, in Input) (string, *output.Error)
 		read, rerr := reader.ReadAt(buf, offset)
 		if read != len(buf) || (rerr != nil && rerr != io.EOF) {
 			// 短读（含 io.EOF）视为本地文件变更/读取失败：不发送该分片、
-			// 不调用 finish/Commit，也不以零字节填充继续（V3 §4.3）。
+			// 不调用 finish/Commit，也不以零字节填充继续。
 			return "", output.Err(output.CodeContentConflict,
-				"分片 %d 读取不完整（%d/%d 字节），本地文件可能已变化，已停止上传", n, read, len(buf))
+				"Part %d read incomplete (%d/%d bytes); the local file may have changed, upload stopped", n, read, len(buf))
 		}
 		upHash.Write(buf)
 		sum := crc32.ChecksumIEEE(buf)
@@ -274,7 +269,7 @@ func (u *Uploader) Upload(ctx context.Context, in Input) (string, *output.Error)
 			}
 			select {
 			case <-ctx.Done():
-				return "", output.Err(output.CodeCancelled, "已取消")
+				return "", output.Err(output.CodeCancelled, "Cancelled")
 			case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
 			}
 		}
@@ -291,12 +286,12 @@ func (u *Uploader) Upload(ctx context.Context, in Input) (string, *output.Error)
 
 	// finish 前再次复核文件状态并比对上传累计摘要与准备阶段基线：
 	// 任一项不一致都停止，不发送 finish/Commit，也不进入 getVideoID。
-	if oerr := checkSourceState(in.Source, "finish 前"); oerr != nil {
+	if oerr := checkSourceState(in.Source, "before finish"); oerr != nil {
 		return "", oerr
 	}
 	if !bytes.Equal(expected, upHash.Sum(nil)) {
 		return "", output.Err(output.CodeContentConflict,
-			"本地文件在预读后发生变化（SHA-256 不一致），已停止上传，未登记媒体")
+			"Local file changed after the pre-read (SHA-256 mismatch); upload stopped, media was not registered")
 	}
 
 	// finish：合并分片，返回整文件 hash。
@@ -326,10 +321,10 @@ func (u *Uploader) apply(ctx context.Context, cred STSCredential) (*applyRespons
 	}
 	var resp applyResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, output.Err(output.CodeRemoteRejected, "Apply 响应结构不符")
+		return nil, output.Err(output.CodeRemoteRejected, "Apply response structure does not match")
 	}
 	if resp.Result.Data.UploadAddress.StoreInfos == nil {
-		return nil, output.Err(output.CodeRemoteRejected, "Apply 响应缺少 UploadAddress")
+		return nil, output.Err(output.CodeRemoteRejected, "Apply response is missing UploadAddress")
 	}
 	return &resp, nil
 }
@@ -350,12 +345,11 @@ func (u *Uploader) transfer(ctx context.Context, host string, store storeInfo, u
 	}
 	var env tosEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return output.Err(output.CodeRemoteRejected, "分片响应不是有效 JSON")
+		return output.Err(output.CodeRemoteRejected, "Part response is not valid JSON")
 	}
 	if env.Code != 2000 {
 		return output.Err(output.CodeRemoteRejected,
-			"分片 %d 上传被拒绝: code=%d msg=%q client=%q server=%q",
-			part, env.Code, env.Message, env.Data.ClientHash, env.Data.ServerHash)
+			"Part %d upload rejected: code=%d", part, env.Code)
 	}
 	return nil
 }
@@ -375,10 +369,10 @@ func (u *Uploader) finish(ctx context.Context, host string, store storeInfo, upl
 	}
 	var env tosEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return "", output.Err(output.CodeRemoteRejected, "finish 响应不是有效 JSON")
+		return "", output.Err(output.CodeRemoteRejected, "finish response is not valid JSON")
 	}
 	if env.Code != 2000 {
-		return "", output.Err(output.CodeRemoteRejected, "finish 被拒绝: code=%d", env.Code)
+		return "", output.Err(output.CodeRemoteRejected, "finish rejected: code=%d", env.Code)
 	}
 	return env.Data.Hash, nil
 }
@@ -402,16 +396,16 @@ func (u *Uploader) commit(ctx context.Context, cred STSCredential, sessionKey, c
 	if oerr != nil {
 		// Commit 失败时媒体已在 TOS 但登记结果未知，不自动重试。
 		if oerr.Code == output.CodeRemoteRejected && oerr.Transport {
-			return "", output.Err(output.CodeRemoteUnknown, "Commit 结果未知")
+			return "", output.Err(output.CodeRemoteUnknown, "Commit result unknown")
 		}
 		return "", oerr
 	}
 	var resp commitResponse
 	if err := json.Unmarshal(raw, &resp); err != nil {
-		return "", output.Err(output.CodeRemoteUnknown, "Commit 响应结构不符")
+		return "", output.Err(output.CodeRemoteUnknown, "Commit response structure does not match")
 	}
 	if resp.Result.Data.Vid == "" {
-		return "", output.Err(output.CodeRemoteUnknown, "Commit 未返回 Vid")
+		return "", output.Err(output.CodeRemoteUnknown, "Commit did not return Vid")
 	}
 	return resp.Result.Data.Vid, nil
 }
@@ -434,7 +428,7 @@ func vodRoundTrip(ctx context.Context, client *http.Client, method, endpoint str
 	}
 	req, err := http.NewRequestWithContext(ctx, method, endpoint, rdr)
 	if err != nil {
-		return nil, output.Err(output.CodeInternal, "构造 VOD 请求失败")
+		return nil, output.Err(output.CodeInternal, "Failed to build the VOD request")
 	}
 	for k, vs := range header {
 		for _, v := range vs {
@@ -444,9 +438,9 @@ func vodRoundTrip(ctx context.Context, client *http.Client, method, endpoint str
 	resp, err := client.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, output.Err(output.CodeCancelled, "已取消")
+			return nil, output.Err(output.CodeCancelled, "Cancelled")
 		}
-		oe := output.Err(output.CodeRemoteRejected, "VOD 网络请求失败")
+		oe := output.Err(output.CodeRemoteRejected, "VOD network request failed")
 		oe.Transport = true
 		return nil, oe
 	}
@@ -454,14 +448,14 @@ func vodRoundTrip(ctx context.Context, client *http.Client, method, endpoint str
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, output.Err(output.CodeCancelled, "已取消")
+			return nil, output.Err(output.CodeCancelled, "Cancelled")
 		}
-		oe := output.Err(output.CodeRemoteRejected, "读取 VOD 响应失败")
+		oe := output.Err(output.CodeRemoteRejected, "Failed to read the VOD response")
 		oe.Transport = true
 		return nil, oe
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, output.Err(output.CodeRemoteRejected, "VOD 返回 HTTP 状态 %d", resp.StatusCode)
+		return nil, output.Err(output.CodeRemoteRejected, "VOD returned HTTP status %d", resp.StatusCode)
 	}
 	return raw, nil
 }
@@ -469,7 +463,7 @@ func vodRoundTrip(ctx context.Context, client *http.Client, method, endpoint str
 // normalizeUploadHost 校验并规范化直传主机名：只接受纯 DNS 主机名
 // （字母/数字/连字符/点），拒绝空白、控制字符、#、?、/、反斜杠、@、冒号/端口、
 // 百分号编码、用户信息、片段、空标签与首尾点；大小写统一为小写。
-// 不通过增删尾点放宽匹配（V3 §4.2 第 1 条）。
+// 不通过增删尾点放宽匹配。
 func normalizeUploadHost(host string) (string, bool) {
 	if host == "" || strings.HasPrefix(host, ".") || strings.HasSuffix(host, ".") || strings.Contains(host, "..") {
 		return "", false
@@ -497,7 +491,7 @@ func hostAllowed(host string, allowed []string) bool {
 
 // buildUploadEndpoint 用已批准主机结构化构造直传 URL，并在返回前复核最终
 // 目的地：https、主机名与批准值完全一致、无端口/用户信息/片段。
-// StoreUri 只作为路径数据，不参与主机拼接（V3 §4.2 第 3 条）。
+// StoreUri 只作为路径数据，不参与主机拼接。
 func buildUploadEndpoint(host, storeURI, rawQuery string) (string, *output.Error) {
 	u := url.URL{
 		Scheme:   "https",
@@ -507,7 +501,7 @@ func buildUploadEndpoint(host, storeURI, rawQuery string) (string, *output.Error
 	}
 	if u.Scheme != "https" || u.Hostname() != host || u.Port() != "" ||
 		u.User != nil || u.Fragment != "" {
-		return "", output.Err(output.CodeRemoteRejected, "上传地址构造校验失败")
+		return "", output.Err(output.CodeRemoteRejected, "Upload address construction check failed")
 	}
 	return u.String(), nil
 }
@@ -532,12 +526,12 @@ func checkSourceState(src VideoSource, stage string) *output.Error {
 	}
 	if size != expSize || !mod.Equal(expMod) {
 		return output.Err(output.CodeContentConflict,
-			"本地视频在准备后发生变化（%s状态复核失败），已停止上传", stage)
+			"Local video changed after preparation (%s state check failed); upload stopped", stage)
 	}
 	return nil
 }
 
-// hashReaderAt 从同一 ReaderAt 预读整文件 SHA-256；短读即失败（V3 §4.3）；
+// hashReaderAt 从同一 ReaderAt 预读整文件 SHA-256；短读即失败；
 // 循环检查 ctx，取消返回 CANCELLED。
 func hashReaderAt(ctx context.Context, r io.ReaderAt, size int64) ([]byte, *output.Error) {
 	h := sha256.New()
@@ -545,7 +539,7 @@ func hashReaderAt(ctx context.Context, r io.ReaderAt, size int64) ([]byte, *outp
 	var off int64
 	for off < size {
 		if ctx.Err() != nil {
-			return nil, output.Err(output.CodeCancelled, "已取消")
+			return nil, output.Err(output.CodeCancelled, "Cancelled")
 		}
 		n := int64(len(buf))
 		if remain := size - off; remain < n {
@@ -554,7 +548,7 @@ func hashReaderAt(ctx context.Context, r io.ReaderAt, size int64) ([]byte, *outp
 		read, err := r.ReadAt(buf[:n], off)
 		if int64(read) != n || (err != nil && err != io.EOF) {
 			return nil, output.Err(output.CodeContentConflict,
-				"预读文件失败（%d/%d 字节），本地文件可能已变化", read, n)
+				"Failed to pre-read the file (%d/%d bytes); the local file may have changed", read, n)
 		}
 		h.Write(buf[:n])
 		off += n
@@ -566,7 +560,7 @@ func hashReaderAt(ctx context.Context, r io.ReaderAt, size int64) ([]byte, *outp
 func newUploadID() (string, *output.Error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", output.Err(output.CodeInternal, "生成 uploadid 失败")
+		return "", output.Err(output.CodeInternal, "Failed to generate uploadid")
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80

@@ -60,7 +60,7 @@ func TestGenAuthKey_HappyPath(t *testing.T) {
 func TestGenAuthKey_InputValidation(t *testing.T) {
 	s := &AuthKeyService{Client: nil}
 	if _, oerr := s.Gen(context.Background(), session.Session{}, AuthKeyOptions{}); oerr == nil ||
-		!strings.Contains(oerr.Message, "未配置") {
+		!strings.Contains(oerr.Message, "not configured") {
 		t.Fatalf("未配置 client 应报错: %+v", oerr)
 	}
 	s2 := &AuthKeyService{}

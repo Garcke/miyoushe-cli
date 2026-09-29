@@ -8,14 +8,16 @@ import (
 
 	"mihoyo_cli/internal/output"
 	"mihoyo_cli/internal/post"
+	"mihoyo_cli/internal/presentation"
 	"mihoyo_cli/internal/protocol"
 )
 
 func newPostCmd(deps Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "post",
-		Short: "帖子查看（写命令按协议证据门禁逐步开放）",
+		Short: "View posts",
 	}
+	cmd.RunE = groupRunE(cmd)
 	cmd.AddCommand(newPostListCmd(deps), newPostShowCmd(deps))
 	return cmd
 }
@@ -29,7 +31,7 @@ func newPostListCmd(deps Deps) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "查看帖子列表（默认当前账号，--uid 查看他人公开帖子）",
+		Short: "View the post list (current account by default; --uid for another user's public posts)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sess, warnings, oerr := loadSessionWithWarning(deps)
@@ -47,36 +49,49 @@ func newPostListCmd(deps Deps) *cobra.Command {
 				return oerr
 			}
 			if jsonMode(cmd) {
+				next, pag := listPagination(page.NextCursor, page.HasMore, nil)
+				ctx := map[string]any{}
+				if uid != "" {
+					ctx["uid"] = uid
+				}
+				if gids > 0 {
+					ctx["gids"] = gids
+				}
+				items := page.Items
+				if items == nil {
+					items = []post.Summary{}
+				}
 				return output.Success(deps.Out,
-					output.ListData{Items: page.Items, HasMore: page.HasMore},
-					page.NextCursor, warnings)
+					output.NewListData(items, page.HasMore, ctx, pag),
+					next, warnings)
 			}
 			printWarnings(deps, cmd, warnings)
 			if len(page.Items) == 0 {
-				fmt.Fprintln(deps.Out, "没有帖子")
+				fmt.Fprintln(deps.Out, "No posts")
 				return nil
 			}
 			for _, it := range page.Items {
-				fmt.Fprintf(deps.Out, "%s  vt=%d  %s  %s\n",
-					it.PostID, it.ViewType, formatTime(it.CreatedAt), truncate(it.Subject, 40))
+				fmt.Fprintf(deps.Out, "%s  %s  %s  %s\n",
+					presentation.SafeInline(it.PostID), presentation.ClassifyPost(it.ViewType, false).Label, formatTime(it.CreatedAt),
+					truncate(presentation.TitleOrPlaceholder(it.Subject), 40))
 			}
 			if page.HasMore {
-				fmt.Fprintf(deps.Out, "下一页 cursor: %s\n", page.NextCursor)
+				fmt.Fprintf(deps.Out, "Next cursor: %s\n", presentation.SafeInline(page.NextCursor))
 			}
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&uid, "uid", "", "目标用户 UID（默认当前账号）")
-	cmd.Flags().IntVar(&gids, "gids", 0, "按游戏 gids 过滤")
-	cmd.Flags().StringVar(&cursor, "cursor", "", "服务端不透明游标")
-	cmd.Flags().IntVar(&limit, "limit", 20, "本次输出总数上限")
+	cmd.Flags().StringVar(&uid, "uid", "", "Target user UID (current account by default)")
+	cmd.Flags().IntVar(&gids, "gids", 0, "Filter by game gids")
+	cmd.Flags().StringVar(&cursor, "cursor", "", "Server-side opaque cursor")
+	cmd.Flags().IntVar(&limit, "limit", 20, "Maximum number of items to output")
 	return cmd
 }
 
 func newPostShowCmd(deps Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "show <post-id>",
-		Short: "查看帖子详情",
+		Short: "View post details",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sess, warnings, oerr := loadSessionWithWarning(deps)
@@ -92,22 +107,21 @@ func newPostShowCmd(deps Deps) *cobra.Command {
 				return output.Success(deps.Out, d, "", warnings)
 			}
 			printWarnings(deps, cmd, warnings)
-			fmt.Fprintf(deps.Out, "帖子: %s (%s)\n", d.PostID, d.Subject)
-			fmt.Fprintf(deps.Out, "view_type: %d\n", d.ViewType)
+			fmt.Fprintf(deps.Out, "Post: %s\n", presentation.SafeInline(d.PostID))
+			fmt.Fprintf(deps.Out, "Type: %s\n", presentation.ClassifyPost(d.ViewType, len(d.Videos) > 0 && d.Videos[0].VideoID != "").Label)
+			fmt.Fprintf(deps.Out, "Title: %s\n", presentation.TitleOrPlaceholder(d.Subject))
 			if d.Author != "" || d.AuthorUID != "" {
-				fmt.Fprintf(deps.Out, "作者: %s (%s)\n", d.Author, d.AuthorUID)
+				fmt.Fprintf(deps.Out, "Author: %s (%s)\n", presentation.SafeMaybe(d.Author), presentation.SafeInline(d.AuthorUID))
 			}
-			fmt.Fprintf(deps.Out, "发布时间: %s\n", formatTime(d.CreatedAt))
-			if d.Describe != "" {
-				fmt.Fprintf(deps.Out, "正文: %s\n", d.Describe)
-			}
-			fmt.Fprintf(deps.Out, "图片: %d 张\n", len(d.Images))
+			fmt.Fprintf(deps.Out, "Posted at: %s\n", formatTime(d.CreatedAt))
+			fmt.Fprintf(deps.Out, "Body: %s\n", presentation.BodyOrPlaceholder(d.Describe))
+			fmt.Fprintf(deps.Out, "Images: %d\n", len(d.Images))
 			for _, u := range d.Images {
-				fmt.Fprintf(deps.Out, "  - %s\n", u)
+				fmt.Fprintf(deps.Out, "  - %s\n", presentation.SafeInline(u))
 			}
-			fmt.Fprintf(deps.Out, "视频: %d 个\n", len(d.Videos))
+			fmt.Fprintf(deps.Out, "Videos: %d\n", len(d.Videos))
 			for _, v := range d.Videos {
-				fmt.Fprintf(deps.Out, "  - id=%s duration=%dms %s\n", v.VideoID, v.DurationMS, v.URL)
+				fmt.Fprintf(deps.Out, "  - id=%s duration=%dms %s\n", presentation.SafeInline(v.VideoID), v.DurationMS, presentation.SafeInline(v.URL))
 			}
 			return nil
 		},

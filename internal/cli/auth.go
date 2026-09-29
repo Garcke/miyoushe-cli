@@ -8,6 +8,7 @@ import (
 
 	"mihoyo_cli/internal/auth"
 	"mihoyo_cli/internal/output"
+	"mihoyo_cli/internal/presentation"
 	"mihoyo_cli/internal/protocol"
 	"mihoyo_cli/internal/role"
 	"mihoyo_cli/internal/verify"
@@ -16,8 +17,9 @@ import (
 func newAuthCmd(deps Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "auth",
-		Short: "登录与凭据管理",
+		Short: "Login and credential management",
 	}
+	cmd.RunE = groupRunE(cmd)
 	cmd.AddCommand(
 		newAuthLoginCmd(deps),
 		newAuthStatusCmd(deps),
@@ -28,14 +30,14 @@ func newAuthCmd(deps Deps) *cobra.Command {
 }
 
 var progressText = map[string]string{
-	"device_ready":    "设备上下文已就绪",
-	"qr_ready":        "二维码已生成，请使用米游社 App 扫码",
-	"waiting_scan":    "等待扫码…",
-	"waiting_confirm": "已扫码，请在手机上确认…",
-	"qr_expired":      "二维码已过期，正在重新生成…",
-	"confirmed":       "手机已确认，正在提取凭据…",
-	"exchanging":      "正在交换 SToken…",
-	"saving":          "正在安全保存凭据…",
+	"device_ready":    "Preparing device context",
+	"qr_ready":        "QR code ready; scan it with the Miyoushe app",
+	"waiting_scan":    "Waiting for scan",
+	"waiting_confirm": "Scanned; waiting for confirmation",
+	"qr_expired":      "QR code expired; regenerating",
+	"confirmed":       "Confirmed; exchanging credentials",
+	"exchanging":      "Exchanging SToken",
+	"saving":          "Saving credentials",
 }
 
 func newAuthLoginCmd(deps Deps) *cobra.Command {
@@ -43,14 +45,14 @@ func newAuthLoginCmd(deps Deps) *cobra.Command {
 	var mode string
 	cmd := &cobra.Command{
 		Use:   "login",
-		Short: "扫码登录并保存 SToken 凭据",
+		Short: "Log in by QR code and save SToken credentials",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if timeout <= 0 {
-				return output.Err(output.CodeInputInvalid, "--timeout 必须为正时长")
+				return output.Err(output.CodeInputInvalid, "--timeout must be a positive duration")
 			}
 			if mode != "passport" && mode != "hk4e" {
-				return output.Err(output.CodeInputInvalid, "--mode 只支持 passport 或 hk4e")
+				return output.Err(output.CodeInputInvalid, "--mode supports only passport or hk4e")
 			}
 			quiet := jsonMode(cmd)
 			render := deps.Render(quiet)
@@ -74,12 +76,12 @@ func newAuthLoginCmd(deps Deps) *cobra.Command {
 					fmt.Fprintln(deps.ErrOut, text)
 				}
 				if quiet && stage == "qr_ready" {
-					fmt.Fprintf(deps.ErrOut, "二维码 PNG: %s（登录结束后清理）\n", render.PNGPath())
+					fmt.Fprintf(deps.ErrOut, "QR code PNG: %s (removed after login)\n", render.PNGPath())
 				}
 			}
 
 			// passport：ma-cn-passport 扫码直出 SToken（默认，实测链路）；
-			// hk4e：游戏码 + Game Token 交换（认证设计原链路）。
+			// hk4e：游戏码 + Game Token 交换。
 			loginFunc := svc.LoginPassport
 			if mode == "hk4e" {
 				loginFunc = svc.Login
@@ -90,10 +92,10 @@ func newAuthLoginCmd(deps Deps) *cobra.Command {
 			}
 
 			warnings := []string{
-				"登录成功仅表示服务端已签发 SToken 并保存，尚未验证社区接口权限",
+				"Login success only means the server issued and saved an SToken; community API permission has not been verified",
 			}
 			data := map[string]any{
-				"uid_masked":       output.MaskID(creds.UID),
+				"uid":              creds.UID,
 				"token_kind":       creds.TokenKind,
 				"credentials_path": deps.Store.Path(),
 				"png_path":         "",
@@ -102,15 +104,15 @@ func newAuthLoginCmd(deps Deps) *cobra.Command {
 				return output.Success(deps.Out, data, "", warnings)
 			}
 			printWarnings(deps, cmd, warnings)
-			fmt.Fprintln(deps.Out, "登录成功")
-			fmt.Fprintf(deps.Out, "账号: %s\n", data["uid_masked"])
-			fmt.Fprintf(deps.Out, "Token 类型: %s\n", creds.TokenKind)
-			fmt.Fprintf(deps.Out, "保存位置: %s\n", deps.Store.Path())
+			fmt.Fprintln(deps.Out, "Login succeeded")
+			fmt.Fprintf(deps.Out, "Account: %s\n", presentation.SafeInline(creds.UID))
+			fmt.Fprintf(deps.Out, "Token type: %s\n", creds.TokenKind)
+			fmt.Fprintf(deps.Out, "Path: %s\n", deps.Store.Path())
 			return nil
 		},
 	}
-	cmd.Flags().DurationVar(&timeout, "timeout", 300*time.Second, "登录总等待上限（如 5m）")
-	cmd.Flags().StringVar(&mode, "mode", "passport", "登录链路：passport（ma-cn-passport 扫码直出）或 hk4e（游戏码+交换）")
+	cmd.Flags().DurationVar(&timeout, "timeout", 300*time.Second, "Total login wait limit (e.g. 5m)")
+	cmd.Flags().StringVar(&mode, "mode", "passport", "Login flow: passport (ma-cn-passport QR code direct) or hk4e (game code + exchange)")
 	return cmd
 }
 
@@ -118,7 +120,7 @@ func newAuthStatusCmd(deps Deps) *cobra.Command {
 	// status 完全离线：不构建任何 API 客户端，不发起网络请求。
 	return &cobra.Command{
 		Use:   "status",
-		Short: "查看本地登录状态（离线，不联网验证）",
+		Short: "Show local login status (offline, no network verification)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			creds, err := deps.Store.Load()
@@ -141,13 +143,13 @@ func newAuthStatusCmd(deps Deps) *cobra.Command {
 					return output.Success(deps.Out, data, "", warnings)
 				}
 				printWarnings(deps, cmd, warnings)
-				fmt.Fprintf(deps.Out, "当前未登录（凭据文件不存在: %s）\n", deps.Store.Path())
+				fmt.Fprintf(deps.Out, "Not logged in (credentials file not found: %s)\n", deps.Store.Path())
 				return nil
 			}
 
 			data := map[string]any{
 				"logged_in":        true,
-				"uid_masked":       output.MaskID(creds.UID),
+				"uid":              creds.UID,
 				"token_kind":       creds.TokenKind,
 				"saved_at":         creds.SavedAt,
 				"expires_at":       creds.ExpiresAt,
@@ -155,15 +157,15 @@ func newAuthStatusCmd(deps Deps) *cobra.Command {
 				"verified":         false,
 			}
 			if jsonMode(cmd) {
-				return output.Success(deps.Out, data, "", append(warnings, "离线状态，未在线验证"))
+				return output.Success(deps.Out, data, "", append(warnings, "Offline status; not verified online"))
 			}
 			printWarnings(deps, cmd, warnings)
-			fmt.Fprintln(deps.Out, "已登录（未在线验证）")
-			fmt.Fprintf(deps.Out, "UID: %s\n", data["uid_masked"])
-			fmt.Fprintf(deps.Out, "Token 类型: %s\n", creds.TokenKind)
-			fmt.Fprintf(deps.Out, "保存时间: %s\n", creds.SavedAt)
-			fmt.Fprintln(deps.Out, "到期时间: 未知，以服务端鉴权为准")
-			fmt.Fprintf(deps.Out, "保存路径: %s\n", deps.Store.Path())
+			fmt.Fprintln(deps.Out, "Logged in (not verified online)")
+			fmt.Fprintf(deps.Out, "UID: %s\n", presentation.SafeInline(creds.UID))
+			fmt.Fprintf(deps.Out, "Token type: %s\n", creds.TokenKind)
+			fmt.Fprintf(deps.Out, "Saved at: %s\n", creds.SavedAt)
+			fmt.Fprintln(deps.Out, "Expires at: unknown; the server decides on authentication")
+			fmt.Fprintf(deps.Out, "Path: %s\n", deps.Store.Path())
 			return nil
 		},
 	}
@@ -172,7 +174,7 @@ func newAuthStatusCmd(deps Deps) *cobra.Command {
 func newAuthVerifyCmd(deps Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "verify",
-		Short: "在线验证社区能力（只读，不打印凭据）",
+		Short: "Verify community capabilities online (read-only; no credentials printed)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			sess, warnings, oerr := loadSessionWithWarning(deps)
@@ -188,10 +190,10 @@ func newAuthVerifyCmd(deps Deps) *cobra.Command {
 				return output.Success(deps.Out, report, "", warnings)
 			}
 			printWarnings(deps, cmd, warnings)
-			fmt.Fprintf(deps.Out, "凭据文件: %s\n", boolText(report.CredentialsValid))
-			fmt.Fprintf(deps.Out, "服务端会话: %s\n", acceptedText(report.ServerAccepted))
+			fmt.Fprintf(deps.Out, "Credentials file: %s\n", boolText(report.CredentialsValid))
+			fmt.Fprintf(deps.Out, "Server session: %s\n", acceptedText(report.ServerAccepted))
 			fmt.Fprintf(deps.Out, "protocol profile: %s\n", report.ProtocolProfile)
-			fmt.Fprintln(deps.Out, "能力:")
+			fmt.Fprintln(deps.Out, "Capabilities:")
 			for _, c := range report.Capabilities {
 				fmt.Fprintf(deps.Out, "  %-13s %-16s %s\n", c.Name, c.State, c.Reason)
 			}
@@ -203,7 +205,7 @@ func newAuthVerifyCmd(deps Deps) *cobra.Command {
 func newAuthLogoutCmd(deps Deps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "logout",
-		Short: "删除本地凭据（幂等；不代表服务端撤销）",
+		Short: "Delete local credentials (idempotent; does not revoke on the server)",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			existed, err := deps.Store.Delete()
@@ -211,7 +213,7 @@ func newAuthLogoutCmd(deps Deps) *cobra.Command {
 				return err
 			}
 			warnings := []string{
-				"本地删除不会使服务端已签发的 SToken 立即失效；如需强制失效，请使用米哈游/米游社提供的账号安全能力",
+				"Local deletion does not immediately invalidate the SToken already issued by the server; to force invalidation, use the account security features provided by miHoYo/Miyoushe",
 			}
 			data := map[string]any{
 				"deleted":          existed,
@@ -222,9 +224,9 @@ func newAuthLogoutCmd(deps Deps) *cobra.Command {
 			}
 			printWarnings(deps, cmd, warnings)
 			if existed {
-				fmt.Fprintf(deps.Out, "已删除本地凭据（%s）\n", deps.Store.Path())
+				fmt.Fprintf(deps.Out, "Deleted local credentials (%s)\n", deps.Store.Path())
 			} else {
-				fmt.Fprintln(deps.Out, "当前未登录")
+				fmt.Fprintln(deps.Out, "Not logged in")
 			}
 			return nil
 		},
@@ -233,14 +235,14 @@ func newAuthLogoutCmd(deps Deps) *cobra.Command {
 
 func boolText(b bool) string {
 	if b {
-		return "有效"
+		return "valid"
 	}
-	return "无效"
+	return "invalid"
 }
 
 func acceptedText(b bool) string {
 	if b {
-		return "接受当前 SToken"
+		return "Accepts the current SToken"
 	}
-	return "拒绝当前 SToken"
+	return "Rejects the current SToken"
 }

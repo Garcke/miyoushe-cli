@@ -1,6 +1,6 @@
 // Package auth 实现 HK4E 扫码登录状态机与 Game Token → SToken 严格交换。
 //
-// 关键契约（认证设计）：
+// 关键契约：
 //   - 复用已有凭据中的有效设备标识，不将旧 Token 发送给二维码接口；
 //   - 默认总等待 300s，--timeout 可调；单次请求上限 15s 且不超出总时限；
 //   - 明确的二维码过期响应触发重建二维码，但不重置总等待上限；
@@ -118,7 +118,7 @@ func (s *Service) Login(ctx context.Context, cfg Config, render Renderer, progre
 		}
 		if !s.now().Before(deadline) {
 			return nil, output.Err(output.CodeLoginTimeout,
-				"登录等待超过总时限 %s", cfg.Timeout)
+				"Login wait exceeded the total timeout %s", cfg.Timeout)
 		}
 		qrURL, ticket, oerr := s.fetchQR(flowCtx, device)
 		if oerr != nil {
@@ -187,7 +187,7 @@ func (s *Service) loadDevice(ctx context.Context) (protocol.DeviceContext, *outp
 func (s *Service) fetchFP(ctx context.Context, deviceID string) (string, *output.Error) {
 	ext, err := json.Marshal(map[string]string{"userAgent": protocol.BrowserUA})
 	if err != nil {
-		return "", output.Err(output.CodeInternal, "构造 ext_fields 失败: %v", err)
+		return "", output.Err(output.CodeInternal, "Failed to build ext_fields: %v", err)
 	}
 	body, err := json.Marshal(struct {
 		DeviceID  string `json:"device_id"`
@@ -207,12 +207,11 @@ func (s *Service) fetchFP(ctx context.Context, deviceID string) (string, *output
 		ExtFields: string(ext),
 	})
 	if err != nil {
-		return "", output.Err(output.CodeInternal, "构造 getFp 请求失败: %v", err)
+		return "", output.Err(output.CodeInternal, "Failed to build the getFp request: %v", err)
 	}
 	var data struct {
 		DeviceFP string `json:"device_fp"`
 		Code     int    `json:"code"`
-		Msg      string `json:"msg"`
 	}
 	h := protocol.CommonHeaders(protocol.ClientTypeScan, protocol.DeviceContext{DeviceID: deviceID})
 	h.Set("User-Agent", protocol.BrowserUA)
@@ -220,10 +219,10 @@ func (s *Service) fetchFP(ctx context.Context, deviceID string) (string, *output
 		return "", oerr
 	}
 	if data.Code != 200 {
-		return "", output.Err(output.CodeRemoteRejected, "设备指纹获取失败: %s", data.Msg)
+		return "", output.Err(output.CodeRemoteRejected, "Failed to obtain the device fingerprint (code %d)", data.Code)
 	}
 	if data.DeviceFP == "" {
-		return "", output.Err(output.CodeRemoteRejected, "设备指纹获取失败: 响应缺少 device_fp")
+		return "", output.Err(output.CodeRemoteRejected, "Failed to obtain the device fingerprint: response is missing device_fp")
 	}
 	return data.DeviceFP, nil
 }
@@ -241,15 +240,15 @@ func (s *Service) fetchQR(ctx context.Context, dev protocol.DeviceContext) (stri
 		return "", "", oerr
 	}
 	if data.URL == "" {
-		return "", "", output.Err(output.CodeRemoteRejected, "二维码响应缺少 url")
+		return "", "", output.Err(output.CodeRemoteRejected, "QR code response is missing url")
 	}
 	u, err := url.Parse(data.URL)
 	if err != nil {
-		return "", "", output.Err(output.CodeRemoteRejected, "二维码 URL 无法解析")
+		return "", "", output.Err(output.CodeRemoteRejected, "QR code URL cannot be parsed")
 	}
 	ticket := u.Query().Get("ticket")
 	if ticket == "" {
-		return "", "", output.Err(output.CodeRemoteRejected, "二维码 URL 缺少 ticket")
+		return "", "", output.Err(output.CodeRemoteRejected, "QR code URL is missing ticket")
 	}
 	return data.URL, ticket, nil
 }
@@ -266,7 +265,7 @@ func (s *Service) pollConfirm(ctx context.Context, cfg Config, deadline time.Tim
 		now := s.now()
 		rem := deadline.Sub(now)
 		if rem <= 0 {
-			return nil, output.Err(output.CodeLoginTimeout, "登录等待超过总时限 %s", cfg.Timeout), false
+			return nil, output.Err(output.CodeLoginTimeout, "Login wait exceeded the total timeout %s", cfg.Timeout), false
 		}
 
 		reqCtx, cancel := context.WithTimeout(ctx, minDuration(cfg.RequestTimeout, rem))
@@ -284,7 +283,7 @@ func (s *Service) pollConfirm(ctx context.Context, cfg Config, deadline time.Tim
 			fails++
 			if fails >= cfg.MaxPollFails {
 				return nil, output.Err(output.CodeRemoteRejected,
-					"查询扫码状态连续失败 %d 次: %s", fails, oerr.Message), false
+					"QR scan status query failed %d times in a row", fails), false
 			}
 			if !sleepCtx(ctx, minDuration(cfg.PollInterval, rem)) {
 				return nil, loginFlowError(ctx.Err(), cfg.Timeout), false
@@ -312,7 +311,7 @@ func (s *Service) pollConfirm(ctx context.Context, cfg Config, deadline time.Tim
 			progress("confirmed")
 			return scan, nil, false
 		default:
-			return nil, output.Err(output.CodeRemoteRejected, "未知扫码状态 %q", stat), false
+			return nil, output.Err(output.CodeRemoteRejected, "Unknown QR scan status"), false
 		}
 
 		if !sleepCtx(ctx, minDuration(cfg.PollInterval, rem)) {
@@ -343,7 +342,7 @@ func (s *Service) queryQR(ctx context.Context, ticket string, dev protocol.Devic
 // parseScanPayload 解析 Confirmed 后 payload.raw（JSON 字符串）。
 func parseScanPayload(raw string) (*scanCredentials, *output.Error) {
 	if raw == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "扫码确认响应缺少 payload")
+		return nil, output.Err(output.CodeRemoteRejected, "QR scan confirmation response is missing payload")
 	}
 	var p struct {
 		UID   string `json:"uid"`
@@ -351,10 +350,10 @@ func parseScanPayload(raw string) (*scanCredentials, *output.Error) {
 		Token string `json:"token"`
 	}
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		return nil, output.Err(output.CodeRemoteRejected, "扫码 payload 不是有效 JSON")
+		return nil, output.Err(output.CodeRemoteRejected, "QR scan payload is not valid JSON")
 	}
 	if p.UID == "" || p.Token == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "扫码 payload 缺少 uid/token")
+		return nil, output.Err(output.CodeRemoteRejected, "QR scan payload is missing uid/token")
 	}
 	return &scanCredentials{UID: p.UID, MID: p.MID, Token: p.Token}, nil
 }
@@ -370,7 +369,7 @@ func (s *Service) exchange(ctx context.Context, dev protocol.DeviceContext, scan
 		GameToken: scan.Token,
 	})
 	if err != nil {
-		return nil, output.Err(output.CodeInternal, "构造交换请求失败: %v", err)
+		return nil, output.Err(output.CodeInternal, "Failed to build the exchange request: %v", err)
 	}
 	h := protocol.CommonHeaders(protocol.ClientTypeAndroid, dev)
 	protocol.WithDS(h, protocol.NewDSPassport(string(body)))
@@ -380,7 +379,7 @@ func (s *Service) exchange(ctx context.Context, dev protocol.DeviceContext, scan
 		if oerr.Transport {
 			// 结果未知：不自动重试，也不保存 Game Token 伪装成功。
 			return nil, output.Err(output.CodeRemoteUnknown,
-				"SToken 交换结果未确认（网络失败），不自动重试；如需重试请重新登录")
+				"SToken exchange result unconfirmed (network failure); no automatic retry; log in again to retry")
 		}
 		return nil, oerr
 	}
@@ -397,33 +396,33 @@ func (s *Service) exchange(ctx context.Context, dev protocol.DeviceContext, scan
 		} `json:"user_info"`
 	}
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return nil, output.Err(output.CodeRemoteRejected, "交换响应 data 结构与预期不符")
+		return nil, output.Err(output.CodeRemoteRejected, "Exchange response data does not match the expected structure")
 	}
 
-	// 校验链（认证设计 §3.6）：任何不满足都失败且不保存。
+	// 校验链：任何不满足都失败且不保存。
 	if data.Token.TokenType != 1 {
 		return nil, output.Err(output.CodeRemoteRejected,
-			"交换响应 token_type=%d，仅接受 SToken 对应值 1", data.Token.TokenType)
+			"Exchange response token_type=%d; only the SToken value 1 is accepted", data.Token.TokenType)
 	}
 	if data.Token.Token == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "交换响应缺少 Token")
+		return nil, output.Err(output.CodeRemoteRejected, "Exchange response is missing Token")
 	}
 	exUID := data.UserInfo.AID.String()
 	if exUID == "" {
 		exUID = data.UID.String()
 	}
 	if !sameAccount(exUID, scan.UID) {
-		return nil, output.Err(output.CodeRemoteRejected, "交换响应 UID 与扫码 UID 不一致")
+		return nil, output.Err(output.CodeRemoteRejected, "Exchange response UID does not match the scanned UID")
 	}
 	mid := data.UserInfo.MID.String()
 	if mid == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "交换响应缺少 MID")
+		return nil, output.Err(output.CodeRemoteRejected, "Exchange response is missing MID")
 	}
 	if scan.MID != "" && mid != scan.MID {
-		return nil, output.Err(output.CodeRemoteRejected, "交换响应 MID 与扫码 MID 不一致")
+		return nil, output.Err(output.CodeRemoteRejected, "Exchange response MID does not match the scanned MID")
 	}
 	if strings.HasPrefix(data.Token.Token, "v2_") && mid == "" {
-		return nil, output.Err(output.CodeRemoteRejected, "V2 Token 缺少 MID")
+		return nil, output.Err(output.CodeRemoteRejected, "V2 Token is missing MID")
 	}
 
 	return store.NewCredentials(scan.UID, mid, data.Token.Token, dev.DeviceID, dev.DeviceFP, s.now()), nil
@@ -464,7 +463,7 @@ func minDuration(a, b time.Duration) time.Duration {
 func newUUID() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		panic("auth: crypto/rand 不可用: " + err.Error())
+		panic("auth: crypto/rand unavailable: " + err.Error())
 	}
 	b[6] = (b[6] & 0x0f) | 0x40
 	b[8] = (b[8] & 0x3f) | 0x80
@@ -474,7 +473,7 @@ func newUUID() string {
 func randomHex(n int) string {
 	b := make([]byte, (n+1)/2)
 	if _, err := rand.Read(b); err != nil {
-		panic("auth: crypto/rand 不可用: " + err.Error())
+		panic("auth: crypto/rand unavailable: " + err.Error())
 	}
 	return hex.EncodeToString(b)[:n]
 }

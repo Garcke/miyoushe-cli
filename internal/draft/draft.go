@@ -1,7 +1,6 @@
 // Package draft 实现草稿能力：草稿箱列表、草稿详情与存/删写接口。
 // 只读证据等级 V（query: view_type&offset&size / draft_id）。
-// 写接口契约来自 2026-09-15 实测（见 docs/reference/cnb-mihoyo-api/snapshot/
-// docs/api/ma-cn-passport扫码登录_2026-09-15实测.md §4）：
+// 写接口契约来自 2026-09-15 实测：
 //   - view_type 参数按草稿类型分桶（1/2/5），"全部草稿"= 各桶并集；
 //   - draft/save 新建不带 draft_id，block_reply_img 必须为 int（boolean → -502）。
 //
@@ -19,6 +18,7 @@ import (
 
 	"mihoyo_cli/internal/api"
 	"mihoyo_cli/internal/output"
+	"mihoyo_cli/internal/presentation"
 	"mihoyo_cli/internal/protocol"
 	"mihoyo_cli/internal/session"
 )
@@ -29,12 +29,21 @@ const pageSize = 20
 var listViewTypes = []int{1, 2, 5}
 
 // Draft 是草稿列表条目。
+// ViewType 是兼容字段（响应缺失时为 0）；EffectiveViewType 与 ViewTypeSource
+// 表达跨桶回退后的有效类型，EffectiveViewType 为 nil 表示
+// unknown。ContentType* 是端点感知的业务分类。
 type Draft struct {
 	DraftID   string `json:"draft_id"`
 	Subject   string `json:"subject"`
 	ViewType  int    `json:"view_type"`
 	CreatedAt int64  `json:"created_at,omitempty"`
 	UpdatedAt int64  `json:"updated_at,omitempty"`
+
+	EffectiveViewType *int   `json:"effective_view_type"`
+	ViewTypeSource    string `json:"view_type_source"`
+	ContentType       string `json:"content_type"`
+	ContentTypeLabel  string `json:"content_type_label"`
+	ContentTypeSource string `json:"content_type_source"`
 }
 
 // Detail 是草稿详情。
@@ -60,16 +69,30 @@ type Page struct {
 	HasMore    bool
 	// Warnings 携带面向用户的提示（如跨桶预览不能续页），CLI 层负责展示。
 	Warnings []string
+	// Notices 携带结构化提示（如服务端 view_type 与来源桶冲突），
+	// JSON 进入 envelope notices，人类模式以 Warning 行展示。
+	Notices []output.Notice
 }
 
 type draftRaw struct {
-	DraftID   api.FlexString `json:"draft_id"`
-	Subject   string         `json:"subject"`
-	ViewType  int            `json:"view_type"`
-	CreatedAt int64          `json:"created_at"`
-	UpdatedAt int64          `json:"updated_at"`
+	DraftID api.FlexString `json:"draft_id"`
+	Subject string         `json:"subject"`
+	// ViewType 用指针区分“响应未出现该字段”与“服务端显式返回 0”。
+	ViewType  *int  `json:"view_type"`
+	CreatedAt int64 `json:"created_at"`
+	UpdatedAt int64 `json:"updated_at"`
 
 	Content *draftContent `json:"content"`
+}
+
+// observation 记录一次列表响应中的类型观察。
+func (raw *draftRaw) observation(bucket int) TypeObservation {
+	ob := TypeObservation{DraftID: raw.DraftID.String(), Bucket: bucket}
+	if raw.ViewType != nil {
+		ob.Present = true
+		ob.ViewType = *raw.ViewType
+	}
+	return ob
 }
 
 // draftImg 容忍 imgs 元素的两种形态：字符串直链或对象（{url}）。
@@ -95,7 +118,7 @@ func (i *draftImg) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// draftContent 容忍 content 的三种线上形态（V3 §5.2）：{describe,imgs} 对象、
+// draftContent 容忍 content 的三种线上形态：{describe,imgs} 对象、
 // 该对象的再序列化字符串，或纯文本/HTML 字符串；不得因字符串形态导致
 // 整条草稿详情反序列化失败。
 type draftContent struct {
@@ -203,22 +226,88 @@ func headers(sess session.Session) http.Header {
 	return h
 }
 
-func (raw *draftRaw) toDraft() (Draft, *output.Error) {
+// collected 汇总列表读取中的原始条目与类型观察。
+type collected struct {
+	order []string
+	raw   map[string]*draftRaw
+	obs   map[string][]TypeObservation
+}
+
+func newCollected() *collected {
+	return &collected{raw: map[string]*draftRaw{}, obs: map[string][]TypeObservation{}}
+}
+
+// add 记录一次观察；同一 draft_id 多次出现时保留首次的原始条目并追加观察。
+func (c *collected) add(raw *draftRaw, bucket int) *output.Error {
 	id := raw.DraftID.String()
 	if id == "" {
-		return Draft{}, output.Err(output.CodeRemoteRejected, "草稿响应缺少 draft_id")
+		return output.Err(output.CodeRemoteRejected, "Draft response is missing draft_id")
 	}
+	if _, ok := c.raw[id]; !ok {
+		c.raw[id] = raw
+		c.order = append(c.order, id)
+	}
+	c.obs[id] = append(c.obs[id], raw.observation(bucket))
+	return nil
+}
+
+// build 按 汇总每条草稿的有效类型。冲突（同一 ID 出现互相矛盾的非零
+// 服务端类型）返回 PROTOCOL_MISMATCH；已规范化的条目通过返回值交给调用方
+// 放进 partial_data。服务端非零值与来源桶冲突的提示以结构化 notice 返回，
+// 不得静默丢弃。
+func (c *collected) build() ([]Draft, []output.Notice, *output.Error) {
+	items := make([]Draft, 0, len(c.order))
+	notices := []output.Notice{}
+	for _, id := range c.order {
+		eff, oerr := AggregateEffectiveType(id, c.obs[id])
+		if oerr != nil {
+			oerr.Context = map[string]any{"draft_id": id}
+			return items, notices, oerr
+		}
+		for _, msg := range eff.Notices {
+			n := output.NewNotice("warning", "DRAFT_TYPE_BUCKET_CONFLICT", msg)
+			n.Context = map[string]any{"draft_id": id}
+			notices = append(notices, n)
+		}
+		items = append(items, buildDraft(c.raw[id], eff))
+	}
+	return items, notices, nil
+}
+
+// buildDraft 由原始条目与有效类型结论生成领域条目。
+func buildDraft(raw *draftRaw, eff EffectiveType) Draft {
+	var vt int
+	if raw.ViewType != nil {
+		vt = *raw.ViewType
+	}
+	src := presentation.SourceUnknown
+	classifyValue := 0
+	if eff.EffectiveViewType != nil {
+		classifyValue = *eff.EffectiveViewType
+		switch eff.Source {
+		case TypeSourceResponse:
+			src = presentation.SourceResponse
+		case TypeSourceQueryBucket:
+			src = presentation.SourceQueryBucket
+		}
+	}
+	info := presentation.ClassifyDraft(classifyValue, src)
 	return Draft{
-		DraftID:   id,
-		Subject:   raw.Subject,
-		ViewType:  raw.ViewType,
-		CreatedAt: raw.CreatedAt,
-		UpdatedAt: raw.UpdatedAt,
-	}, nil
+		DraftID:           raw.DraftID.String(),
+		Subject:           raw.Subject,
+		ViewType:          vt,
+		CreatedAt:         raw.CreatedAt,
+		UpdatedAt:         raw.UpdatedAt,
+		EffectiveViewType: eff.EffectiveViewType,
+		ViewTypeSource:    eff.Source,
+		ContentType:       string(info.Type),
+		ContentTypeLabel:  info.Label,
+		ContentTypeSource: string(info.Source),
+	}
 }
 
 // List 拉取草稿箱。
-// ViewType=0：跨桶首页预览（ARCHITECTURE-V2 §6）——分别取 1/2/5 桶首页，
+// ViewType=0：跨桶首页预览——分别取 1/2/5 桶首页，
 // 按 draft_id 去重、updated_at 降序 + draft_id 升序稳定排序后截断到 limit；
 // 任一桶还有后续或结果被截断时 HasMore=true，并返回“预览不能续页”提示；
 // 此模式不接受 Cursor。ViewType=1/2/5：单桶语义，服务端不透明游标续翻。
@@ -226,13 +315,13 @@ func (s *Service) List(ctx context.Context, sess session.Session, opts ListOptio
 	if opts.ViewType == 0 {
 		if opts.Cursor != "" {
 			return Page{}, output.Err(output.CodeInputInvalid,
-				"跨桶首页预览不支持 --cursor 续页；请用 --view-type 1|2|5 --cursor 遍历单桶")
+				"Cross-bucket first-page preview does not support --cursor pagination; use --view-type 1|2|5 --cursor to page through one bucket")
 		}
 		return s.listAllBuckets(ctx, sess, opts)
 	}
 	if !validBucket(opts.ViewType) {
 		return Page{}, output.Err(output.CodeInputInvalid,
-			"--view-type 仅支持 1、2、5（实测 view_type 按草稿类型分桶）")
+			"--view-type supports only 1, 2 and 5 (view_type buckets drafts by type)")
 	}
 	return s.listBucket(ctx, sess, opts)
 }
@@ -246,7 +335,7 @@ func validBucket(vt int) bool {
 	return false
 }
 
-// listAllBuckets 跨桶首页预览（ARCHITECTURE-V2 §6）：先取每桶一页
+// listAllBuckets 跨桶首页预览：先取每桶一页
 // （size=min(pageSize, limit)），合并去重、按 updated_at 降序 + draft_id 升序
 // 稳定排序，再截断到 limit；被截断或任一桶还有后续都如实标记 has_more，
 // 并提示预览不能续页。不返回全局游标（无法据此续页）。
@@ -260,8 +349,7 @@ func (s *Service) listAllBuckets(ctx context.Context, sess session.Session, opts
 		perBucket = limit
 	}
 
-	seen := map[string]bool{}
-	var merged []Draft
+	c := newCollected()
 	anyBucketHasMore := false
 	for _, vt := range listViewTypes {
 		q := url.Values{}
@@ -273,10 +361,11 @@ func (s *Service) listAllBuckets(ctx context.Context, sess session.Session, opts
 			List []listEntry `json:"list"`
 		}
 		if oerr := s.Client.DoJSON(ctx, "GET", "/post/api/draft/list", q, nil, headers(sess), &data); oerr != nil {
-			if len(merged) > 0 {
+			if len(c.order) > 0 {
 				oe := output.Err(output.CodeRemoteRejected,
-					"草稿列表（view_type=%d）读取失败: %s", vt, oerr.Message)
-				oe.PartialData = ListDataJSON(Page{Items: merged, HasMore: anyBucketHasMore})
+					"Failed to read draft list (view_type=%d): %s", vt, oerr.Message)
+				items, _, _ := c.build()
+				oe.PartialData = ListDataJSON(Page{Items: items, HasMore: anyBucketHasMore})
 				return Page{}, oe
 			}
 			return Page{}, oerr
@@ -286,19 +375,20 @@ func (s *Service) listAllBuckets(ctx context.Context, sess session.Session, opts
 			if raw == nil {
 				raw = &entry.draftRaw
 			}
-			d, oerr := raw.toDraft()
-			if oerr != nil {
+			if oerr := c.add(raw, vt); oerr != nil {
 				return Page{}, oerr
 			}
-			if seen[d.DraftID] {
-				continue
-			}
-			seen[d.DraftID] = true
-			merged = append(merged, d)
 		}
 		if data.HasMore() {
 			anyBucketHasMore = true
 		}
+	}
+
+	merged, notices, oerr := c.build()
+	if oerr != nil {
+		oe := oerr
+		oe.PartialData = ListDataJSON(Page{Items: merged, HasMore: true})
+		return Page{}, oe
 	}
 
 	sort.SliceStable(merged, func(i, j int) bool {
@@ -312,10 +402,10 @@ func (s *Service) listAllBuckets(ctx context.Context, sess session.Session, opts
 	if truncated {
 		merged = merged[:limit]
 	}
-	page := Page{Items: merged, HasMore: anyBucketHasMore || truncated}
+	page := Page{Items: merged, HasMore: anyBucketHasMore || truncated, Notices: notices}
 	if page.HasMore {
 		page.Warnings = append(page.Warnings,
-			"跨桶首页预览不能续页；如需遍历请使用 --view-type 1|2|5 --cursor")
+			"Cross-bucket first-page preview cannot paginate; use --view-type 1|2|5 --cursor to page through")
 	}
 	return page, nil
 }
@@ -328,11 +418,11 @@ func (s *Service) listBucket(ctx context.Context, sess session.Session, opts Lis
 	if limit <= 0 {
 		limit = pageSize
 	}
-	page := Page{Items: []Draft{}}
+	c := newCollected()
 	cursor := opts.Cursor
 	for {
 		size := pageSize
-		if remain := limit - len(page.Items); remain < size {
+		if remain := limit - len(c.order); remain < size {
 			size = remain
 		}
 		q := url.Values{}
@@ -345,10 +435,12 @@ func (s *Service) listBucket(ctx context.Context, sess session.Session, opts Lis
 			List []listEntry `json:"list"`
 		}
 		if oerr := s.Client.DoJSON(ctx, "GET", "/post/api/draft/list", q, nil, headers(sess), &data); oerr != nil {
-			if len(page.Items) > 0 {
+			if len(c.order) > 0 {
 				oe := output.Err(output.CodeRemoteRejected,
-					"草稿列表第 %d 页读取失败: %s", len(page.Items)/pageSize+1, oerr.Message)
+					"Failed to read draft list page %d: %s", len(c.order)/pageSize+1, oerr.Message)
 				oe.ResumeCursor = cursor
+				items, _, _ := c.build()
+				oe.PartialData = ListDataJSON(Page{Items: items, HasMore: true})
 				return Page{}, oe
 			}
 			return Page{}, oerr
@@ -358,33 +450,39 @@ func (s *Service) listBucket(ctx context.Context, sess session.Session, opts Lis
 			if raw == nil {
 				raw = &entry.draftRaw
 			}
-			d, oerr := raw.toDraft()
-			if oerr != nil {
+			if oerr := c.add(raw, opts.ViewType); oerr != nil {
 				return Page{}, oerr
 			}
-			page.Items = append(page.Items, d)
-			if len(page.Items) >= limit {
+			if len(c.order) >= limit {
 				break
 			}
 		}
 		cursor = data.Cursor()
-		page.NextCursor = cursor
-		page.HasMore = data.HasMore()
-		if !page.HasMore || len(page.Items) >= limit {
-			break
+		hasMore := data.HasMore()
+		if !hasMore || len(c.order) >= limit {
+			items, notices, oerr := c.build()
+			if oerr != nil {
+				oe := oerr
+				oe.PartialData = ListDataJSON(Page{Items: items, HasMore: hasMore})
+				return Page{}, oe
+			}
+			next := ""
+			if hasMore {
+				next = cursor
+			}
+			return Page{Items: items, NextCursor: next, HasMore: hasMore, Notices: notices}, nil
 		}
 	}
-	return page, nil
 }
 
 // Get 拉取草稿详情。
-// 包装层为 {draft_id, draft:{post:{…}}, version, lottery}（2026-09-15 实测 §4.1）：
+// 包装层为 {draft_id, draft:{post:{…}}, version, lottery}（2026-09-15 实测）：
 // 优先识别 data.draft.post，兼容扁平 data.draft；内层缺少 draft_id 时使用
 // 外层 data.draft_id。两层 ID 不一致、响应 ID 与请求 draft-id 不同、
-// 或两层均缺失，都作为协议冲突失败（V3 §5.2），不以请求参数伪造响应 ID。
+// 或两层均缺失，都作为协议冲突失败，不以请求参数伪造响应 ID。
 func (s *Service) Get(ctx context.Context, sess session.Session, draftID string) (Detail, *output.Error) {
 	if draftID == "" {
-		return Detail{}, output.Err(output.CodeInputInvalid, "draft-id 不能为空")
+		return Detail{}, output.Err(output.CodeInputInvalid, "draft-id cannot be empty")
 	}
 	q := url.Values{}
 	q.Set("draft_id", draftID)
@@ -400,7 +498,7 @@ func (s *Service) Get(ctx context.Context, sess session.Session, draftID string)
 		return Detail{}, oerr
 	}
 	if data.Draft == nil {
-		return Detail{}, output.Err(output.CodeRemoteRejected, "草稿详情响应缺少 draft 字段")
+		return Detail{}, output.Err(output.CodeRemoteRejected, "Draft detail response is missing the draft field")
 	}
 	raw := data.Draft.Post
 	if raw == nil {
@@ -411,9 +509,9 @@ func (s *Service) Get(ctx context.Context, sess session.Session, draftID string)
 	switch {
 	case innerID != "" && outerID != "" && innerID != outerID:
 		return Detail{}, output.Err(output.CodeRemoteRejected,
-			"草稿详情 ID 冲突：内层与外层 draft_id 不一致")
+			"Draft detail ID conflict: inner and outer draft_id differ")
 	case innerID == "" && outerID == "":
-		return Detail{}, output.Err(output.CodeRemoteRejected, "草稿详情响应缺少 draft_id")
+		return Detail{}, output.Err(output.CodeRemoteRejected, "Draft detail response is missing draft_id")
 	}
 	id := innerID
 	if id == "" {
@@ -421,15 +519,18 @@ func (s *Service) Get(ctx context.Context, sess session.Session, draftID string)
 	}
 	if id != draftID {
 		return Detail{}, output.Err(output.CodeRemoteRejected,
-			"草稿详情响应 ID 与请求的 draft-id 不一致")
+			"Draft detail response ID does not match the requested draft-id")
 	}
-	d := Detail{Draft: Draft{
-		DraftID:   id,
-		Subject:   raw.Subject,
-		ViewType:  raw.ViewType,
-		CreatedAt: raw.CreatedAt,
-		UpdatedAt: raw.UpdatedAt,
-	}}
+	// 详情没有查询桶：只有服务端显式非零 view_type 能给出有效类型，
+	// 缺失或 0 都保持 unknown。
+	ob := raw.observation(0)
+	ob.DraftID = id // 外层 ID 兜底时原始条目没有内层 draft_id
+	eff, oerr := AggregateEffectiveType(id, []TypeObservation{ob})
+	if oerr != nil {
+		return Detail{}, oerr
+	}
+	d := Detail{Draft: buildDraft(raw, eff)}
+	d.DraftID = id // 外层 ID 兜底时 raw.DraftID 可能为空
 	if c := raw.Content; c != nil {
 		d.Describe = c.Describe
 		d.Images = c.Imgs
@@ -439,7 +540,7 @@ func (s *Service) Get(ctx context.Context, sess session.Session, draftID string)
 
 // SaveOptions 是保存草稿的内容输入。
 // StructuredContent 传 Quill delta 序列化后的 JSON 字符串（与 content HTML 同内容）。
-// BlockReplyImg 契约：int 0/1；服务端对 boolean 直接 -502（实测 §4.1），0 值省略发送。
+// BlockReplyImg 契约：int 0/1；服务端对 boolean 直接 -502，0 值省略发送。
 type SaveOptions struct {
 	Subject           string
 	ContentHTML       string
@@ -455,16 +556,16 @@ type SaveOptions struct {
 // 实测契约：新建不带 draft_id；is_profit/is_original/topic_ids 可选（全缺也 rc=0）。
 func (s *Service) Save(ctx context.Context, sess session.Session, opts SaveOptions) (string, *output.Error) {
 	if opts.Subject == "" {
-		return "", output.Err(output.CodeInputInvalid, "草稿标题不能为空")
+		return "", output.Err(output.CodeInputInvalid, "Draft title cannot be empty")
 	}
 	if opts.ForumID == "" {
-		return "", output.Err(output.CodeInputInvalid, "forum-id 不能为空")
+		return "", output.Err(output.CodeInputInvalid, "forum-id cannot be empty")
 	}
 	if opts.ViewType == 0 {
-		return "", output.Err(output.CodeInputInvalid, "view-type 必须显式指定（1/2/5）")
+		return "", output.Err(output.CodeInputInvalid, "view-type must be specified explicitly (1/2/5)")
 	}
 	if opts.GIDs == 0 {
-		return "", output.Err(output.CodeInputInvalid, "gids 不能为空")
+		return "", output.Err(output.CodeInputInvalid, "gids cannot be empty")
 	}
 
 	body := map[string]any{
@@ -484,7 +585,7 @@ func (s *Service) Save(ctx context.Context, sess session.Session, opts SaveOptio
 	}
 	b, err := json.Marshal(body)
 	if err != nil {
-		return "", output.Err(output.CodeInternal, "构造草稿保存请求失败: %v", err)
+		return "", output.Err(output.CodeInternal, "Failed to build the draft save request: %v", err)
 	}
 
 	h := headers(sess)
@@ -496,7 +597,7 @@ func (s *Service) Save(ctx context.Context, sess session.Session, opts SaveOptio
 	}
 	id := data.DraftID.String()
 	if id == "" {
-		return "", output.Err(output.CodeRemoteRejected, "保存草稿响应缺少 draft_id")
+		return "", output.Err(output.CodeRemoteRejected, "Save draft response is missing draft_id")
 	}
 	return id, nil
 }
@@ -504,13 +605,13 @@ func (s *Service) Save(ctx context.Context, sess session.Session, opts SaveOptio
 // Delete 删除草稿（幂等由服务端决定；已删草稿重复删除返回远端错误原样上报）。
 func (s *Service) Delete(ctx context.Context, sess session.Session, draftID string) *output.Error {
 	if draftID == "" {
-		return output.Err(output.CodeInputInvalid, "draft-id 不能为空")
+		return output.Err(output.CodeInputInvalid, "draft-id cannot be empty")
 	}
 	b, err := json.Marshal(struct {
 		DraftID string `json:"draft_id"`
 	}{DraftID: draftID})
 	if err != nil {
-		return output.Err(output.CodeInternal, "构造草稿删除请求失败: %v", err)
+		return output.Err(output.CodeInternal, "Failed to build the draft delete request: %v", err)
 	}
 	return s.Client.DoJSON(ctx, "POST", "/post/api/draft/delete", nil, b, headers(sess), &struct{}{})
 }

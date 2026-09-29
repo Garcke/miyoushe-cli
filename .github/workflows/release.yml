@@ -53,9 +53,9 @@ jobs:
         uses: actions/attest@v4
         with:
           subject-path: |
-            dist/mys_*/*
-            dist/mys_*.tar.gz
-            dist/mys_*.zip
+            dist/mys-cli_*/*
+            dist/mys-cli_*.tar.gz
+            dist/mys-cli_*.zip
             dist/checksums.txt
 
   npm-publish:

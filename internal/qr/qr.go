@@ -31,32 +31,32 @@ func NewRenderer(stdout io.Writer, quiet bool) *Renderer {
 func (r *Renderer) Render(content string) (string, error) {
 	code, err := qrcore.New(content, qrcore.Low)
 	if err != nil {
-		return "", fmt.Errorf("二维码编码失败: %w", err)
+		return "", fmt.Errorf("Failed to encode QR code: %w", err)
 	}
 	if !r.Quiet && r.Stdout != nil {
 		// 半块字符画；false 表示不使用静区反色。
 		fmt.Fprintln(r.Stdout, code.ToSmallString(false))
 	}
 	if r.path == "" {
-		f, err := os.CreateTemp("", "mys-login-*.png")
+		f, err := os.CreateTemp("", "mys-cli-login-*.png")
 		if err != nil {
-			return "", fmt.Errorf("创建临时二维码文件失败: %w", err)
+			return "", fmt.Errorf("Failed to create the temporary QR code file: %w", err)
 		}
 		r.path = f.Name()
 		f.Close()
-		// 新文件从创建时就受保护（认证设计 §5）。
+		// 新文件从创建时就受保护。
 		if err := store.HardenFile(r.path); err != nil {
 			os.Remove(r.path)
 			r.path = ""
-			return "", fmt.Errorf("临时二维码文件加固失败: %w", err)
+			return "", fmt.Errorf("Failed to harden the temporary QR code file: %w", err)
 		}
 	}
 	png, err := code.PNG(512)
 	if err != nil {
-		return "", fmt.Errorf("生成二维码 PNG 失败: %w", err)
+		return "", fmt.Errorf("Failed to generate the QR code PNG: %w", err)
 	}
 	if err := os.WriteFile(r.path, png, 0o600); err != nil {
-		return "", fmt.Errorf("写入二维码 PNG 失败: %w", err)
+		return "", fmt.Errorf("Failed to write the QR code PNG: %w", err)
 	}
 	return r.path, nil
 }
