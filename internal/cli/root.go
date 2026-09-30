@@ -137,9 +137,12 @@ func emitFailure(deps Deps, cmd *cobra.Command, oe *output.Error) {
 	// 选择器解析失败时，人类模式也列出候选（JSON 侧读 context.candidates）。
 	printCandidates(deps.ErrOut, oe)
 	if a := oe.Action; a != nil && a.Type == "run_command" && a.Executable != "" {
+		// Args may carry user input or upstream-derived values (e.g. the
+		// --game selector): escape each one for display. JSON action values
+		// and real request parameters stay untouched.
 		next := a.Executable
 		for _, arg := range a.Args {
-			next += " " + arg
+			next += " " + presentation.SafeInline(arg)
 		}
 		fmt.Fprintf(deps.ErrOut, "Next: %s\n", next)
 	}
@@ -189,12 +192,15 @@ func candidateLabels(raw any) []string {
 	}
 	out := make([]string, 0, len(maps))
 	for _, m := range maps {
+		// Every interpolated field comes from the upstream directory and is
+		// escaped for display; JSON context keeps the original values.
 		name := presentation.SafeInline(stringField(m, "name"))
-		if id := stringField(m, "forum_id"); id != "" {
+		if id := presentation.SafeInline(stringField(m, "forum_id")); id != "" {
 			out = append(out, strings.TrimSpace(id+" "+name))
 			continue
 		}
-		gids, en := stringField(m, "gids"), stringField(m, "en_name")
+		gids := presentation.SafeInline(stringField(m, "gids"))
+		en := presentation.SafeInline(stringField(m, "en_name"))
 		if gids != "" || en != "" {
 			out = append(out, strings.TrimSpace(gids+" "+en+" "+name))
 		}
